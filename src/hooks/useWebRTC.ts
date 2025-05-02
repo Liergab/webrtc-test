@@ -3,6 +3,7 @@ import Peer, { DataConnection, MediaConnection } from "peerjs";
 
 interface Participant {
   id: string;
+  username: string;
   stream: MediaStream;
   isCreator: boolean;
   isScreenSharing?: boolean;
@@ -17,6 +18,7 @@ interface Participant {
 interface UseWebRTCProps {
   roomId: string;
   isCreator: boolean;
+  username: string;
   onDataReceived?: (data: unknown) => void;
 }
 
@@ -35,6 +37,7 @@ interface DataMessage {
 export const useWebRTC = ({
   roomId,
   isCreator,
+  username,
   onDataReceived,
 }: UseWebRTCProps) => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -47,6 +50,7 @@ export const useWebRTC = ({
     "mesh"
   );
   const [transitionsEnabled, setTransitionsEnabled] = useState(true);
+  const [localUsername, setLocalUsername] = useState(username);
 
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<{
@@ -126,6 +130,9 @@ export const useWebRTC = ({
         iceCandidatePoolSize: 10,
       },
       debug: 2,
+      metadata: {
+        username: localUsername,
+      },
     });
 
     // Handle browser tab close/refresh
@@ -163,6 +170,9 @@ export const useWebRTC = ({
       peerRef.current = peer;
       setIsConnected(true);
 
+      // Update the username in metadata if it changes
+      peer.metadata = { username: localUsername };
+
       // Set up data connection handling
       peer.on("connection", (dataConn) => {
         handleDataConnection(dataConn);
@@ -199,6 +209,12 @@ export const useWebRTC = ({
       const initialState = existingParticipant ? "reconnecting" : "connecting";
       setParticipantTransition(call.peer, initialState);
 
+      // Try to get username from peer metadata if available
+      let peerUsername = "Guest";
+      if (call.metadata && call.metadata.username) {
+        peerUsername = call.metadata.username;
+      }
+
       // Handle incoming stream
       call.on("stream", (remoteStream) => {
         console.log("Received remote stream from:", call.peer);
@@ -227,6 +243,7 @@ export const useWebRTC = ({
                     stream: remoteStream,
                     streamType,
                     isScreenSharing: streamType === "screen",
+                    username: p.username || peerUsername,
                   }
                 : p
             );
@@ -248,10 +265,12 @@ export const useWebRTC = ({
             ...prev,
             {
               id: call.peer,
+              username: peerUsername,
               stream: remoteStream,
               isCreator: isCreatorPeer,
               isScreenSharing: streamType === "screen",
               streamType,
+              transitionState: "connecting",
             },
           ];
         });
@@ -302,7 +321,7 @@ export const useWebRTC = ({
       peer.destroy();
       setIsConnected(false);
     };
-  }, [localStream, roomId, isCreator]);
+  }, [localStream, roomId, isCreator, localUsername]);
 
   // Broadcast peer list to all connected participants
   const broadcastPeerList = () => {
@@ -365,6 +384,7 @@ export const useWebRTC = ({
             ...prev,
             {
               id: peerId,
+              username: localUsername,
               stream: remoteStream,
               isCreator: peerId.includes("-creator"),
             },
@@ -649,6 +669,7 @@ export const useWebRTC = ({
                   ...prev,
                   {
                     id: peerId,
+                    username: localUsername,
                     stream: remoteStream,
                     isCreator: peerId.includes("-creator"),
                     isScreenSharing: false,
@@ -664,6 +685,7 @@ export const useWebRTC = ({
                 ...newParticipants[existingIndex],
                 stream: remoteStream,
                 isScreenSharing: false,
+                username: localUsername,
               };
 
               return newParticipants;
@@ -717,6 +739,14 @@ export const useWebRTC = ({
         ...connectionsRef.current[dataConn.peer],
         dataConnection: dataConn,
       };
+
+      // Send my username to the peer immediately
+      dataConn.send({
+        type: "username",
+        username: localUsername,
+        peerId: peerRef.current?.id,
+        timestamp: Date.now(),
+      });
 
       // If we're the creator, send a list of all current participants to the new joiner
       if (isCreator) {
@@ -1338,7 +1368,13 @@ export const useWebRTC = ({
             }
 
             // Create a new connection
-            const call = peerRef.current!.call(reconnectingPeerId, localStream);
+            const call = peerRef.current!.call(
+              reconnectingPeerId,
+              localStream,
+              {
+                metadata: { username: localUsername },
+              }
+            );
 
             // Save the connection
             connectionsRef.current[reconnectingPeerId] = {
@@ -1366,6 +1402,7 @@ export const useWebRTC = ({
                     stream: remoteStream,
                     streamType: "camera",
                     isScreenSharing: false,
+                    username: localUsername,
                   };
                   return updated;
                 } else {
@@ -1374,6 +1411,7 @@ export const useWebRTC = ({
                     ...prev,
                     {
                       id: reconnectingPeerId,
+                      username: localUsername,
                       stream: remoteStream,
                       isCreator: reconnectingPeerId.includes("-creator"),
                       isScreenSharing: false,
@@ -1385,6 +1423,19 @@ export const useWebRTC = ({
             });
           }, 200);
         }
+      }
+
+      // Handle username updates
+      if (data.type === "username" && data.username && data.peerId) {
+        const username = data.username;
+        const peerId = data.peerId;
+
+        console.log(`Received username '${username}' from peer ${peerId}`);
+
+        // Update participant's username
+        setParticipants((prev) =>
+          prev.map((p) => (p.id === peerId ? { ...p, username } : p))
+        );
       }
 
       // Forward any data to the callback if provided
@@ -1449,6 +1500,7 @@ export const useWebRTC = ({
           ...prev,
           {
             id: creatorId,
+            username: localUsername,
             stream: remoteStream,
             isCreator: true,
           },
@@ -1740,6 +1792,19 @@ export const useWebRTC = ({
     }
   };
 
+  // Update the setUsername function to allow username changes
+  const setUsername = (newUsername: string) => {
+    setLocalUsername(newUsername);
+
+    // Notify all participants about the username change
+    sendDataToAll({
+      type: "username",
+      username: newUsername,
+      peerId: peerRef.current?.id,
+      timestamp: Date.now(),
+    });
+  };
+
   return {
     localStream,
     screenStream,
@@ -1756,5 +1821,7 @@ export const useWebRTC = ({
     reconnectAll,
     sendDataToAll,
     setTransitionsEnabled,
+    username: localUsername,
+    setUsername,
   };
 };
