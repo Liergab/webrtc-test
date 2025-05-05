@@ -1,0 +1,351 @@
+/* Recording Banner */
+.recording-banner {
+  box-shadow: 0 2px 10px rgba(224, 40, 40, 0.6);
+  animation: banner-pulse 2s infinite;
+}
+
+@keyframes banner-pulse {
+  0%,
+  100% {
+    background-color: rgba(224, 40, 40, 0.9);
+  }
+  50% {
+    background-color: rgba(224, 40, 40, 0.7);
+  }
+}
+
+/* Recording Controls Styling */
+.recording-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.recording-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background-color: #2d2d2d;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 10px 16px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.recording-button:hover {
+  background-color: #3d3d3d;
+}
+
+.recording-button svg {
+  color: #e02828;
+}
+
+/* Tooltip that explains "sharing" vs "recording" */
+.recording-tooltip {
+  position: absolute;
+  top: -40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(0, 0, 0, 0.8);
+  color: white;
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s;
+  z-index: 1000;
+}
+
+.recording-tooltip:after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 5px 5px 0 5px;
+  border-style: solid;
+  border-color: rgba(0, 0, 0, 0.8) transparent transparent transparent;
+}
+
+.recording-button:hover .recording-tooltip {
+  opacity: 1;
+  visibility: visible;
+}
+
+.recording-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background-color: rgba(224, 40, 40, 0.15);
+  border-radius: 8px;
+  border: 1px solid rgba(224, 40, 40, 0.3);
+  position: relative;
+}
+
+.recording-live {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.recording-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background-color: #e02828;
+  animation: pulse 1.5s infinite;
+}
+
+.recording-timer {
+  color: white;
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* Bold recording label */
+.recording-label {
+  font-weight: 700;
+  color: #e02828;
+  font-size: 14px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  animation: blink 2s infinite;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.stop-recording-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background-color: rgba(224, 40, 40, 0.85);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  position: relative;
+}
+
+.stop-recording-button:hover {
+  background-color: #e02828;
+}
+
+.stop-recording-button:after {
+  content: "Auto-save";
+  position: absolute;
+  top: -20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(0, 0, 0, 0.7);
+  color: white;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.stop-recording-button:hover:after {
+  opacity: 1;
+}
+
+/* For participants - recording indicator */
+.recording-indicator {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background-color: rgba(224, 40, 40, 0.7);
+  color: white;
+  padding: 6px 10px;
+  border-radius: 6px;
+  z-index: 10;
+  font-size: 13px;
+  animation: fadeInOut 2s infinite;
+  text-transform: uppercase;
+  font-weight: bold;
+  letter-spacing: 0.5px;
+}
+
+.indicator-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: #e02828;
+  animation: pulse 1.5s infinite;
+}
+
+.indicator-text {
+  color: white;
+  font-size: 12px;
+}
+
+@keyframes pulse {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(1.2);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes fadeInOut {
+  0% {
+    opacity: 0.7;
+  }
+  50% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.7;
+  }
+}
+
+/* Zoom-like layout styles */
+.screen-share-grid {
+  display: grid;
+  grid-template-columns: 3fr 1fr;
+  grid-gap: 8px;
+}
+
+@media (max-width: 768px) {
+  .screen-share-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+}
+
+/* Participants list styling */
+.participants-list {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.participants-list .participant-item {
+  padding: 8px 12px;
+  border-radius: 4px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.participants-list .participant-item:hover {
+  background-color: rgba(66, 153, 225, 0.1);
+}
+
+.participants-list .participant-item.pinned {
+  background-color: rgba(66, 153, 225, 0.2);
+}
+
+/* Animations for transitions */
+.animate-fadeIn {
+  animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Thumbnail hover effects */
+.thumbnail-container {
+  transition: transform 0.2s, border-color 0.2s;
+}
+
+.thumbnail-container:hover {
+  transform: scale(1.05);
+  z-index: 5;
+}
+
+.thumbnail-container.pinned {
+  border-color: #3182ce;
+  box-shadow: 0 0 0 2px #3182ce;
+}
+
+/* Mobile responsive styling */
+@media (max-width: 768px) {
+  .recording-button span,
+  .stop-recording-button span {
+    display: none;
+  }
+
+  .recording-button,
+  .stop-recording-button {
+    padding: 8px;
+  }
+
+  .recording-status {
+    padding: 4px 8px;
+  }
+
+  .recording-indicator {
+    top: 8px;
+    right: 8px;
+    padding: 4px 8px;
+  }
+}
+
+/* Main video container animations */
+.main-video-container {
+  transition: all 0.3s ease-in-out;
+}
+
+.main-video-container.transitioning {
+  opacity: 0.7;
+  transform: scale(0.98);
+}
+
+/* Custom scrollbar for participants and chat */
+.participants-list div::-webkit-scrollbar,
+.chat-messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.participants-list div::-webkit-scrollbar-track,
+.chat-messages::-webkit-scrollbar-track {
+  background: rgba(31, 41, 55, 0.5);
+}
+
+.participants-list div::-webkit-scrollbar-thumb,
+.chat-messages::-webkit-scrollbar-thumb {
+  background-color: rgba(75, 85, 99, 0.5);
+  border-radius: 6px;
+}
+
+.participants-list div::-webkit-scrollbar-thumb:hover,
+.chat-messages::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(75, 85, 99, 0.8);
+}

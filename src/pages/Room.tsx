@@ -11,15 +11,27 @@ import {
   MessageSquare,
   Send,
   ScreenShare,
-  StopCircle,
+  Pin,
+  Clock,
 } from "lucide-react";
 import { useWebRTC } from "../hooks/useWebRTC";
+import RecordingControls from "../components/RecordingControls";
+import ParticipantsList from "../components/ParticipantsList";
+import "../styles/recording.css";
+import { useReactMediaRecorder } from "react-media-recorder";
 
 interface Participant {
   id: string;
+  username: string;
   stream: MediaStream;
   isCreator: boolean;
   isScreenSharing?: boolean;
+  streamType?: "camera" | "screen";
+  transitionState?:
+    | "connecting"
+    | "connected"
+    | "disconnecting"
+    | "reconnecting";
 }
 
 interface ChatMessage {
@@ -42,29 +54,99 @@ interface ChatDataMessage extends DataMessage {
   timestamp: number;
 }
 
+// For recording status notification to participants
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+interface RecordingStatusMessage extends DataMessage {
+  type: "recording-status";
+  isRecording: boolean;
+  host: string;
+  timestamp: number;
+}
+
 // Define component types at the top level
 interface RemoteScreenShareProps {
   participant: Participant;
   onReconnectRequest?: () => void;
 }
 
+interface RemoteVideoProps {
+  participant: Participant;
+  isRecordingVisible: boolean;
+  isPinned: boolean;
+}
+
 const Room: React.FC = () => {
-  // Existing state
+  // URL params and routing
   const { roomId } = useParams<{ roomId: string }>();
   const location = useLocation();
   const navigate = useNavigate();
-  const isCreator =
-    new URLSearchParams(location.search).get("isCreator") === "true";
+  const queryParams = new URLSearchParams(location.search);
+  const isCreator = queryParams.get("isCreator") === "true";
+  const usernameFromUrl =
+    queryParams.get("username") ||
+    (isCreator ? "Host" : `Guest-${Math.floor(Math.random() * 1000)}`);
+  const roomTitle = queryParams.get("title") || "Untitled Meeting";
+
+  // Local state
   const [isMicOn, setIsMicOn] = useState(true);
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [isCopied, setIsCopied] = useState(false);
+  const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
+  const [pinnedParticipantId, setPinnedParticipantId] = useState<string | null>(
+    null
+  );
 
-  // Chat state
-  const [isChatOpen, setIsChatOpen] = useState(false);
+  // Chat state - default open as requested
+  const [isChatOpen, setIsChatOpen] = useState(true);
   const [message, setMessage] = useState("");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
+  // Recording state with useReactMediaRecorder
+  const [recordingTime, setRecordingTime] = useState(0);
+  const recordingTimerRef = useRef<number | null>(null);
+
+  // Use react-media-recorder for screen recording
+  const {
+    status: recordingStatus,
+    startRecording,
+    stopRecording,
+    clearBlobUrl,
+  } = useReactMediaRecorder({
+    screen: true,
+    audio: true,
+    video: true,
+    mediaRecorderOptions: { mimeType: "video/webm" },
+    onStop: (blobUrl, blob) => {
+      // Auto-save the recording when stopped
+      if (blob) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        document.body.appendChild(a);
+        a.style.display = "none";
+        a.href = url;
+        const dateString = new Date().toISOString().replace(/[:.]/g, "-");
+        a.download = `${roomTitle.replace(/\s+/g, "-")}-${dateString}.webm`;
+        a.click();
+
+        // Clean up
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+          document.body.removeChild(a);
+          clearBlobUrl();
+        }, 100);
+      }
+
+      // Clear the recording timer
+      if (recordingTimerRef.current) {
+        window.clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+        setRecordingTime(0);
+      }
+    },
+  });
+
+  // The rest of WebRTC functionality
   const {
     localStream,
     screenStream,
@@ -79,6 +161,7 @@ const Room: React.FC = () => {
   } = useWebRTC({
     roomId: roomId || "",
     isCreator,
+    username: usernameFromUrl,
     onDataReceived: handleDataReceived,
   });
 
@@ -87,13 +170,34 @@ const Room: React.FC = () => {
 
   // Check if any participant is sharing screen
   const screenSharingParticipant = participants.find((p) => p.isScreenSharing);
-  const isAnyoneScreenSharing = isScreenSharing || !!screenSharingParticipant;
   const [screenShareConnected, setScreenShareConnected] = useState(true);
 
-  // Handle received data (for chat)
-  function handleDataReceived(data: DataMessage) {
-    if (data.type === "chat-message") {
-      const chatData = data as ChatDataMessage;
+  // Map recording status to isRecording state
+  const isRecording = recordingStatus === "recording";
+
+  // Add a state to track if participants can see recording indicator
+  const [isRecordingVisible, setIsRecordingVisible] = useState(false);
+
+  // Helper to handle pinning a participant
+  const handlePinParticipant = (id: string) => {
+    // If already pinned, unpin it
+    if (pinnedParticipantId === id) {
+      setPinnedParticipantId(null);
+    } else {
+      setPinnedParticipantId(id);
+    }
+  };
+
+  // Update the data received handler to handle unknown type
+  function handleDataReceived(data: unknown) {
+    // Type guard for data
+    if (!data || typeof data !== "object") return;
+
+    // Safe type casting
+    const typedData = data as Record<string, unknown>;
+
+    if (typedData.type === "chat-message") {
+      const chatData = typedData as ChatDataMessage;
       const newMessage: ChatMessage = {
         sender: chatData.sender,
         text: chatData.text,
@@ -101,6 +205,11 @@ const Room: React.FC = () => {
         isFromMe: false,
       };
       setChatMessages((prev) => [...prev, newMessage]);
+    }
+
+    // Handle recording status updates
+    if (typedData.type === "recording-status") {
+      setIsRecordingVisible(Boolean(typedData.isRecording));
     }
   }
 
@@ -111,7 +220,7 @@ const Room: React.FC = () => {
     // Create message object
     const chatMessage = {
       type: "chat-message",
-      sender: isCreator ? "Host" : "You",
+      sender: usernameFromUrl,
       text: message,
       timestamp: Date.now(),
     };
@@ -142,8 +251,15 @@ const Room: React.FC = () => {
 
   useEffect(() => {
     if (error) {
-      alert(`Error: ${error}. Redirecting to home page.`);
-      navigate("/");
+      // Check if this is a recording error or a critical connection error
+      if (error.includes("recording") || error.includes("Recording")) {
+        // Just show an alert for recording errors without redirecting
+        alert(`Error: ${error}`);
+      } else {
+        // For critical connection errors, redirect to home page
+        alert(`Error: ${error}. Redirecting to home page.`);
+        navigate("/");
+      }
     }
   }, [error, navigate]);
 
@@ -178,6 +294,8 @@ const Room: React.FC = () => {
   };
 
   // Handle screen sharing
+  const [isTransitioning, setIsTransitioning] = useState(false);
+
   const handleToggleScreenShare = () => {
     if (isScreenSharing) {
       setIsTransitioning(true);
@@ -216,26 +334,6 @@ const Room: React.FC = () => {
       localVideoRef.current.srcObject = localStream;
     }
   }, [localStream, participants]);
-
-  // Regular check for screen sharing participant to ensure UI is in sync
-  useEffect(() => {
-    // Log screen sharing status changes for debugging
-    console.log(
-      "Screen sharing status change:",
-      isScreenSharing,
-      "Sharing participant:",
-      screenSharingParticipant?.id
-    );
-
-    // Force update the UI when screen sharing status changes
-    if (screenSharingParticipant && !isAnyoneScreenSharing) {
-      console.log(
-        "Detected inconsistency in screen sharing UI state, fixing..."
-      );
-      // This will trigger a re-render with correct sharing state
-      setIsChatOpen(isChatOpen);
-    }
-  }, [isScreenSharing, screenSharingParticipant]);
 
   // Handle graceful video transitions with a cleanup function
   const cleanupVideoRefs = () => {
@@ -299,25 +397,124 @@ const Room: React.FC = () => {
     }
   };
 
-  const [isTransitioning, setIsTransitioning] = useState(false);
+  // Handle starting recording with timer
+  const handleStartRecording = () => {
+    startRecording();
+    setRecordingTime(0);
+
+    // Start timer for recording duration display
+    recordingTimerRef.current = window.setInterval(() => {
+      setRecordingTime((prev) => prev + 1);
+    }, 1000);
+
+    // Notify participants that recording has started
+    sendDataToAll({
+      type: "recording-status",
+      isRecording: true,
+      host: usernameFromUrl,
+      timestamp: Date.now(),
+    });
+  };
+
+  // Handle stopping recording
+  const handleStopRecording = () => {
+    stopRecording();
+
+    // Notify participants that recording has stopped
+    sendDataToAll({
+      type: "recording-status",
+      isRecording: false,
+      host: usernameFromUrl,
+      timestamp: Date.now(),
+    });
+  };
+
+  // Clean up recording resources on component unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        window.clearInterval(recordingTimerRef.current);
+        recordingTimerRef.current = null;
+      }
+      // Also clear blob URL if component unmounts during recording
+      clearBlobUrl();
+    };
+  }, [clearBlobUrl]);
+
+  // Add a recording banner at the top of the screen when recording
+  const RecordingBanner = () => {
+    if (!isRecording) return null;
+
+    return (
+      <div className="fixed top-0 left-0 right-0 bg-red-600 text-white py-1 text-center font-bold z-50 recording-banner">
+        <div className="flex items-center justify-center gap-2">
+          <div className="recording-dot"></div>
+          <span>SCREEN RECORDING IN PROGRESS</span>
+          <Clock size={16} />
+          <span>
+            {Math.floor(recordingTime / 60)
+              .toString()
+              .padStart(2, "0")}
+            :{(recordingTime % 60).toString().padStart(2, "0")}
+          </span>
+          <div className="recording-dot"></div>
+        </div>
+        <div className="text-xs opacity-80">
+          (Browser shows "sharing your screen" but you are recording)
+        </div>
+      </div>
+    );
+  };
+
+  // Also add this effect to ensure local video stream is always properly attached
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      // Fix issue with local video not showing when pinned
+      if (pinnedParticipantId === "local") {
+        console.log("Ensuring local video is visible when pinned");
+        const currentStream = localVideoRef.current.srcObject;
+
+        // Only reset if needed
+        if (currentStream !== localStream) {
+          localVideoRef.current.srcObject = null;
+          setTimeout(() => {
+            if (localVideoRef.current) {
+              localVideoRef.current.srcObject = localStream;
+            }
+          }, 50);
+        }
+      }
+    }
+  }, [localStream, pinnedParticipantId]);
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col main-container">
+      {/* Show recording banner */}
+      <RecordingBanner />
+
       {/* Room header */}
-      <header className="bg-gray-800 p-4 shadow-md">
+      <header className="bg-gray-800 p-4 shadow-md z-30">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center">
           <div className="flex items-center mb-3 sm:mb-0">
             <Video className="h-6 w-6 text-blue-500 mr-2" />
-            <h1 className="text-xl font-bold">WebRTC Room</h1>
+            <div>
+              <h1 className="text-xl font-bold">WebRTC Room</h1>
+              <h2 className="text-sm text-gray-400">{roomTitle}</h2>
+            </div>
           </div>
 
           <div className="flex items-center space-x-2">
-            <div className="flex items-center bg-gray-700 rounded-lg px-3 py-2">
+            <button
+              onClick={() => setIsParticipantsOpen(!isParticipantsOpen)}
+              className={`flex items-center bg-gray-700 hover:bg-gray-600 rounded-lg px-3 py-2 transition-colors ${
+                isParticipantsOpen ? "bg-blue-600 hover:bg-blue-700" : ""
+              }`}
+            >
               <Users className="h-4 w-4 text-blue-400 mr-2" />
               <span className="text-sm">
                 {participants.length + 1} participants
               </span>
-            </div>
+            </button>
 
             <div className="relative flex items-center bg-gray-700 rounded-lg px-3 py-2">
               <span className="text-sm mr-2 truncate max-w-[180px]">
@@ -341,11 +538,11 @@ const Room: React.FC = () => {
       </header>
 
       {/* Main content with video grid and chat */}
-      <main className="flex-1 p-4 sm:p-6 overflow-hidden bg-gray-900 flex">
+      <main className="flex-1 p-4 sm:p-6 pb-20 overflow-hidden bg-gray-900 flex">
         {/* Video grid */}
         <div
           className={`h-full ${
-            isChatOpen ? "w-3/4" : "w-full"
+            isChatOpen || isParticipantsOpen ? "w-3/4" : "w-full"
           } transition-all duration-300`}
         >
           {/* Loading overlay during transitions */}
@@ -365,348 +562,472 @@ const Room: React.FC = () => {
             </div>
           )}
 
-          {/* If there's a screen share, display it prominently but keep all participants visible */}
-          {isAnyoneScreenSharing ? (
-            <div className="h-full grid gap-4 transition-all duration-500 ease-in-out screen-share-grid">
-              {/* Screen share area - left side */}
-              <div className="bg-gray-800 rounded-lg overflow-hidden shadow-lg">
-                {isScreenSharing ? (
-                  <video
-                    ref={screenVideoRef}
-                    autoPlay
-                    playsInline
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <RemoteScreenShare
-                    participant={screenSharingParticipant!}
-                    onReconnectRequest={requestScreenShareReconnect}
-                  />
-                )}
-                <div className="absolute top-3 left-3 bg-red-500 bg-opacity-70 rounded-md px-2 py-1">
-                  <span className="text-sm font-medium">
-                    {isScreenSharing
-                      ? "You are sharing your screen"
-                      : `${
-                          screenSharingParticipant?.isCreator
-                            ? "Host"
-                            : "Participant"
-                        } is sharing screen`}
-                  </span>
-                </div>
-              </div>
-
-              {/* Participant videos - right side */}
-              <div className="h-full overflow-y-auto">
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-1 lg:grid-cols-1">
-                  {/* Your video */}
-                  <div className="relative bg-gray-800 rounded-lg overflow-hidden shadow-lg h-48">
-                    <video
-                      ref={localVideoRef}
-                      autoPlay
-                      playsInline
-                      muted
-                      className={`w-full h-full object-cover ${
-                        !isVideoOn ? "hidden" : ""
-                      }`}
-                    />
-
-                    {!isVideoOn && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
-                        <div className="h-16 w-16 rounded-full bg-gray-700 flex items-center justify-center">
-                          <Users className="h-8 w-8 text-gray-500" />
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="absolute bottom-2 left-2 bg-gray-900 bg-opacity-70 rounded-md px-2 py-1">
-                      <span className="text-sm font-medium">
-                        {isCreator ? "You (Host)" : "You"}
-                      </span>
-                    </div>
-
-                    {!isMicOn && (
-                      <div className="absolute top-2 right-2 bg-red-500 rounded-full p-1">
-                        <MicOff className="h-3 w-3" />
-                      </div>
-                    )}
-                  </div>
-
-                  {/* All participants (including the one sharing screen) */}
-                  {participants.map((participant) => (
-                    <div
-                      key={participant.id}
-                      className="relative bg-gray-800 rounded-lg overflow-hidden shadow-lg animate-fadeIn h-48"
-                    >
-                      <RemoteVideo participant={participant} />
-                      <div className="absolute bottom-2 left-2 bg-gray-900 bg-opacity-70 rounded-md px-2 py-1">
+          {/* Zoom-like layout with main view and side thumbnails */}
+          <div className="h-full flex flex-col">
+            {/* Main video display */}
+            <div className="flex-1 bg-gray-800 rounded-lg overflow-hidden shadow-lg relative mb-2">
+              {/* Determine main display based on pinned participant, screen sharing, or creator status */}
+              {(() => {
+                // If local user is screen sharing, prioritize showing that
+                if (isScreenSharing) {
+                  return (
+                    <div className="h-full w-full relative">
+                      <video
+                        ref={screenVideoRef}
+                        autoPlay
+                        playsInline
+                        className="w-full h-full object-contain bg-black"
+                      />
+                      <div className="absolute top-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1 flex items-center gap-2">
+                        <ScreenShare className="h-4 w-4 text-blue-400" />
                         <span className="text-sm font-medium">
-                          {participant.isCreator
-                            ? "Host"
-                            : `Participant${
-                                participant.isScreenSharing ? " (Sharing)" : ""
-                              }`}
+                          You are sharing your screen
                         </span>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
+                  );
+                }
+
+                // If there's a pinned participant
+                if (pinnedParticipantId) {
+                  // If pinned is the local user
+                  if (pinnedParticipantId === "local") {
+                    return (
+                      <div className="h-full w-full relative">
+                        {/* Use key to force re-render when pinned/unpinned */}
+                        <video
+                          key={`pinned-local-${Date.now()}`}
+                          ref={localVideoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className={`w-full h-full object-cover ${
+                            !isVideoOn ? "hidden" : ""
+                          }`}
+                        />
+
+                        {!isVideoOn && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
+                            <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
+                              <span className="text-4xl font-bold text-gray-500">
+                                {usernameFromUrl.charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1 flex items-center">
+                          <span className="text-base font-medium">
+                            {usernameFromUrl} (You)
+                          </span>
+                          <Pin className="h-3 w-3 ml-2 text-blue-400" />
+                        </div>
+
+                        {!isMicOn && (
+                          <div className="absolute top-4 right-4 bg-red-500 rounded-full p-2">
+                            <MicOff className="h-4 w-4" />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+
+                  // If pinned is another participant
+                  const pinnedParticipant = participants.find(
+                    (p) => p.id === pinnedParticipantId
+                  );
+                  if (pinnedParticipant) {
+                    return (
+                      <div className="h-full w-full relative">
+                        <RemoteVideo
+                          participant={pinnedParticipant}
+                          isRecordingVisible={isRecordingVisible}
+                          isPinned={true}
+                        />
+                      </div>
+                    );
+                  }
+                }
+
+                // If someone else is screen sharing, show that
+                if (screenSharingParticipant) {
+                  return (
+                    <RemoteScreenShare
+                      participant={screenSharingParticipant}
+                      onReconnectRequest={requestScreenShareReconnect}
+                    />
+                  );
+                }
+
+                // Default: if creator, show them, otherwise show creator
+                if (isCreator) {
+                  return (
+                    <div className="h-full w-full relative">
+                      <video
+                        ref={localVideoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className={`w-full h-full object-cover ${
+                          !isVideoOn ? "hidden" : ""
+                        }`}
+                      />
+
+                      {!isVideoOn && (
+                        <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
+                          <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
+                            <span className="text-4xl font-bold text-gray-500">
+                              {usernameFromUrl.charAt(0).toUpperCase()}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1">
+                        <span className="text-base font-medium">
+                          {usernameFromUrl} (Host)
+                        </span>
+                      </div>
+
+                      {!isMicOn && (
+                        <div className="absolute top-4 right-4 bg-red-500 rounded-full p-2">
+                          <MicOff className="h-4 w-4" />
+                        </div>
+                      )}
+                    </div>
+                  );
+                } else {
+                  const creator = participants.find((p) => p.isCreator);
+                  if (creator) {
+                    return (
+                      <div className="h-full w-full relative">
+                        <RemoteVideo
+                          participant={creator}
+                          isRecordingVisible={isRecordingVisible}
+                          isPinned={false}
+                        />
+                      </div>
+                    );
+                  } else {
+                    // Fallback to local user if creator not found
+                    return (
+                      <div className="h-full w-full relative">
+                        <video
+                          ref={localVideoRef}
+                          autoPlay
+                          playsInline
+                          muted
+                          className={`w-full h-full object-cover ${
+                            !isVideoOn ? "hidden" : ""
+                          }`}
+                        />
+
+                        {!isVideoOn && (
+                          <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
+                            <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
+                              <span className="text-4xl font-bold text-gray-500">
+                                {usernameFromUrl.charAt(0).toUpperCase()}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1">
+                          <span className="text-base font-medium">
+                            {usernameFromUrl} (You)
+                          </span>
+                        </div>
+
+                        {!isMicOn && (
+                          <div className="absolute top-4 right-4 bg-red-500 rounded-full p-2">
+                            <MicOff className="h-4 w-4" />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+                }
+              })()}
             </div>
-          ) : (
-            // Original layout when no screen sharing
-            <div className="h-full grid grid-cols-1 md:grid-cols-3 gap-4 auto-rows-fr">
-              {/* If user is creator, show them first */}
-              {isCreator && (
-                <div className="relative bg-gray-800 rounded-lg overflow-hidden shadow-lg md:col-span-2 md:row-span-2 transition-all duration-300">
+
+            {/* Thumbnails row */}
+            <div className="h-24 flex space-x-2 overflow-x-auto py-1">
+              {/* Local user thumbnail */}
+              <div
+                className={`relative h-full aspect-video bg-gray-800 rounded-lg shadow-md cursor-pointer border-2 ${
+                  pinnedParticipantId === "local"
+                    ? "border-blue-500"
+                    : "border-transparent"
+                } hover:border-blue-400 transition-colors`}
+                onClick={() => handlePinParticipant("local")}
+              >
+                {/* Create a separate video element for the thumbnail to prevent conflicts */}
+                <div className="h-full w-full relative overflow-hidden rounded-lg">
                   <video
-                    ref={localVideoRef}
+                    key="local-thumbnail"
                     autoPlay
                     playsInline
                     muted
-                    className={`w-full h-full object-cover ${
+                    className={`w-full h-full object-cover rounded-lg ${
                       !isVideoOn ? "hidden" : ""
                     }`}
+                    ref={(el) => {
+                      // Set up the video source directly
+                      if (el && localStream && !el.srcObject) {
+                        el.srcObject = localStream;
+                      }
+                    }}
+                  />
+                </div>
+
+                {!isVideoOn && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-gray-800 rounded-lg">
+                    <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center">
+                      <span className="text-xl font-bold text-gray-500">
+                        {usernameFromUrl.charAt(0).toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                <div className="absolute bottom-1 left-1 right-1 bg-gray-900 bg-opacity-70 rounded text-xs px-1 py-0.5 truncate">
+                  {usernameFromUrl} (You)
+                </div>
+
+                {!isMicOn && (
+                  <div className="absolute top-1 right-1 bg-red-500 rounded-full p-1">
+                    <MicOff className="h-2 w-2" />
+                  </div>
+                )}
+
+                {pinnedParticipantId === "local" && (
+                  <div className="absolute top-1 left-1 bg-blue-500 rounded-full p-1">
+                    <Pin className="h-2 w-2" />
+                  </div>
+                )}
+              </div>
+
+              {/* Other participants thumbnails */}
+              {participants.map((participant) => (
+                <div
+                  key={participant.id}
+                  className={`relative h-full aspect-video bg-gray-800 rounded-lg shadow-md cursor-pointer border-2 ${
+                    pinnedParticipantId === participant.id
+                      ? "border-blue-500"
+                      : "border-transparent"
+                  } hover:border-blue-400 transition-colors`}
+                  onClick={() => handlePinParticipant(participant.id)}
+                >
+                  <RemoteVideo
+                    participant={participant}
+                    isRecordingVisible={false}
+                    isPinned={pinnedParticipantId === participant.id}
                   />
 
-                  {!isVideoOn && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
-                      <div className="h-20 w-20 rounded-full bg-gray-700 flex items-center justify-center">
-                        <Users className="h-10 w-10 text-gray-500" />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="absolute bottom-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-2 py-1">
-                    <span className="text-sm font-medium">You (Host)</span>
-                  </div>
-
-                  {!isMicOn && (
-                    <div className="absolute top-3 right-3 bg-red-500 rounded-full p-1">
-                      <MicOff className="h-4 w-4" />
+                  {pinnedParticipantId === participant.id && (
+                    <div className="absolute top-1 left-1 bg-blue-500 rounded-full p-1">
+                      <Pin className="h-2 w-2" />
                     </div>
                   )}
                 </div>
-              )}
+              ))}
+            </div>
+          </div>
+        </div>
 
-              {/* If user is not creator, show creator first if available */}
-              {!isCreator &&
-                participants
-                  .filter((p) => p.isCreator)
-                  .map((participant) => (
+        {/* Sidebar (Chat or Participants) */}
+        <div
+          className={`w-1/4 ${
+            isChatOpen || isParticipantsOpen ? "block" : "hidden"
+          } ml-4 flex flex-col z-20`}
+        >
+          {isParticipantsOpen && (
+            <div className="flex-1 mb-4">
+              <ParticipantsList
+                participants={participants.map((p) => ({
+                  id: p.id,
+                  username: p.username,
+                  isCreator: p.isCreator,
+                  isScreenSharing: p.isScreenSharing || false,
+                  isMuted: false,
+                }))}
+                currentUser={{
+                  username: usernameFromUrl,
+                  isCreator,
+                }}
+                onPinParticipant={handlePinParticipant}
+                pinnedParticipantId={pinnedParticipantId}
+              />
+            </div>
+          )}
+
+          {isChatOpen && (
+            <div
+              className={`${
+                isParticipantsOpen ? "flex-1" : "flex-1"
+              } bg-gray-800 rounded-lg flex flex-col shadow-lg animate-fadeIn mb-16 chat-container`}
+            >
+              <div className="p-3 border-b border-gray-700 font-medium">
+                <h3>Room Chat</h3>
+              </div>
+
+              {/* Messages container */}
+              <div className="flex-1 overflow-y-auto p-3 space-y-3 chat-messages">
+                {chatMessages.length === 0 ? (
+                  <p className="text-gray-500 text-center text-sm py-4">
+                    No messages yet
+                  </p>
+                ) : (
+                  chatMessages.map((msg, index) => (
                     <div
-                      key={participant.id}
-                      className="relative bg-gray-800 rounded-lg overflow-hidden shadow-lg md:col-span-2 md:row-span-2 animate-fadeIn transition-all duration-300"
+                      key={index}
+                      className={`max-w-[85%] ${
+                        msg.isFromMe ? "ml-auto bg-blue-600" : "bg-gray-700"
+                      } rounded-lg p-2 break-words`}
                     >
-                      <RemoteVideo participant={participant} />
-                      <div className="absolute bottom-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-2 py-1">
-                        <span className="text-sm font-medium">Host</span>
+                      <div className="text-xs text-gray-300 mb-1">
+                        {msg.isFromMe ? "You" : msg.sender}
+                      </div>
+                      <div>{msg.text}</div>
+                      <div className="text-xs text-gray-300 mt-1 text-right">
+                        {new Date(msg.timestamp).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
                       </div>
                     </div>
-                  ))}
+                  ))
+                )}
+                <div ref={chatEndRef} />
+              </div>
 
-              {/* If user is not creator, show them second */}
-              {!isCreator && (
-                <div className="relative bg-gray-800 rounded-lg overflow-hidden shadow-lg transition-all duration-300">
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className={`w-full h-full object-cover ${
-                      !isVideoOn ? "hidden" : ""
-                    }`}
-                  />
-
-                  {!isVideoOn && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
-                      <div className="h-20 w-20 rounded-full bg-gray-700 flex items-center justify-center">
-                        <Users className="h-10 w-10 text-gray-500" />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="absolute bottom-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-2 py-1">
-                    <span className="text-sm font-medium">You</span>
-                  </div>
-
-                  {!isMicOn && (
-                    <div className="absolute top-3 right-3 bg-red-500 rounded-full p-1">
-                      <MicOff className="h-4 w-4" />
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Show all other participants */}
-              {participants
-                .filter((participant) => !participant.isCreator)
-                .map((participant) => (
-                  <div
-                    key={participant.id}
-                    className="relative bg-gray-800 rounded-lg overflow-hidden shadow-lg animate-fadeIn transition-all duration-300"
-                  >
-                    <RemoteVideo participant={participant} />
-                    <div className="absolute bottom-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-2 py-1">
-                      <span className="text-sm font-medium">Participant</span>
-                    </div>
-                  </div>
-                ))}
-
-              {/* Empty placeholder for better grid layout when few participants */}
-              {participants.length === 0 && !isCreator && (
-                <div className="hidden md:block md:col-span-2 md:row-span-2"></div>
-              )}
+              {/* Message input with higher z-index */}
+              <div className="p-3 border-t border-gray-700 flex bg-gray-800 relative z-30">
+                <input
+                  type="text"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Type a message..."
+                  className="flex-1 bg-gray-700 text-white rounded-l-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <button
+                  onClick={sendChatMessage}
+                  disabled={!message.trim()}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-r-lg px-3 py-2"
+                >
+                  <Send className="h-5 w-5" />
+                </button>
+              </div>
             </div>
           )}
         </div>
-
-        {/* Chat panel */}
-        {isChatOpen && (
-          <div className="w-1/4 bg-gray-800 rounded-lg ml-4 flex flex-col shadow-lg animate-fadeIn">
-            <div className="p-3 border-b border-gray-700 font-medium">
-              <h3>Room Chat</h3>
-            </div>
-
-            {/* Messages container */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-3">
-              {chatMessages.length === 0 ? (
-                <p className="text-gray-500 text-center text-sm py-4">
-                  No messages yet
-                </p>
-              ) : (
-                chatMessages.map((msg, index) => (
-                  <div
-                    key={index}
-                    className={`max-w-[85%] ${
-                      msg.isFromMe ? "ml-auto bg-blue-600" : "bg-gray-700"
-                    } rounded-lg p-2 break-words`}
-                  >
-                    <div className="text-xs text-gray-300 mb-1">
-                      {msg.isFromMe ? "You" : msg.sender}
-                    </div>
-                    <div>{msg.text}</div>
-                    <div className="text-xs text-gray-300 mt-1 text-right">
-                      {new Date(msg.timestamp).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </div>
-                  </div>
-                ))
-              )}
-              <div ref={chatEndRef} />
-            </div>
-
-            {/* Message input */}
-            <div className="p-3 border-t border-gray-700 flex">
-              <input
-                type="text"
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Type a message..."
-                className="flex-1 bg-gray-700 text-white rounded-l-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-              <button
-                onClick={sendChatMessage}
-                disabled={!message.trim()}
-                className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-r-lg px-3 py-2"
-              >
-                <Send className="h-5 w-5" />
-              </button>
-            </div>
-          </div>
-        )}
       </main>
 
-      {/* Controls */}
-      <footer className="bg-gray-800 p-4 shadow-lg">
-        <div className="max-w-7xl mx-auto flex justify-center items-center space-x-4">
+      {/* Controls - Fixed position at bottom */}
+      <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-80 p-4 flex justify-center z-10 fixed-controls">
+        <div className="flex space-x-4 items-center">
+          {/* Mic Button */}
           <button
             onClick={handleToggleMic}
-            className={`p-3 rounded-full ${
-              isMicOn
-                ? "bg-gray-700 hover:bg-gray-600"
-                : "bg-red-500 hover:bg-red-600"
-            } transition-colors duration-300`}
-            aria-label={isMicOn ? "Mute microphone" : "Unmute microphone"}
+            className="rounded-full bg-gray-700 p-3 text-white hover:bg-gray-600 transition"
           >
             {isMicOn ? (
-              <Mic className="h-6 w-6" />
+              <Mic size={20} />
             ) : (
-              <MicOff className="h-6 w-6" />
+              <MicOff size={20} className="text-red-500" />
             )}
           </button>
 
+          {/* Video Button */}
           <button
             onClick={handleToggleVideo}
-            className={`p-3 rounded-full ${
-              isVideoOn
-                ? "bg-gray-700 hover:bg-gray-600"
-                : "bg-red-500 hover:bg-red-600"
-            } transition-colors duration-300`}
-            aria-label={isVideoOn ? "Turn off camera" : "Turn on camera"}
+            className="rounded-full bg-gray-700 p-3 text-white hover:bg-gray-600 transition"
           >
             {isVideoOn ? (
-              <Video className="h-6 w-6" />
+              <Video size={20} />
             ) : (
-              <VideoOff className="h-6 w-6" />
+              <VideoOff size={20} className="text-red-500" />
             )}
           </button>
 
+          {/* Screen Share Button */}
           <button
             onClick={handleToggleScreenShare}
-            className={`p-3 rounded-full ${
+            className={`rounded-full p-3 text-white transition ${
               isScreenSharing
-                ? "bg-red-500 hover:bg-red-600"
+                ? "bg-blue-600 hover:bg-blue-700"
                 : "bg-gray-700 hover:bg-gray-600"
-            } transition-colors duration-300`}
-            aria-label={
-              isScreenSharing ? "Stop sharing screen" : "Share screen"
-            }
-            disabled={screenSharingParticipant !== undefined}
+            }`}
+            disabled={!!screenSharingParticipant}
             title={
               screenSharingParticipant
-                ? "Someone is already sharing their screen"
-                : ""
+                ? "Someone else is sharing their screen"
+                : isScreenSharing
+                ? "Stop sharing screen"
+                : "Share screen"
             }
           >
             {isScreenSharing ? (
-              <StopCircle className="h-6 w-6" />
+              <div className="w-5 h-5 flex items-center justify-center">■</div>
             ) : (
-              <ScreenShare className="h-6 w-6" />
+              <ScreenShare size={20} />
             )}
           </button>
 
+          {/* Recording Controls */}
+          <RecordingControls
+            isCreator={isCreator}
+            isRecording={isRecording || isRecordingVisible}
+            recordingTime={recordingTime}
+            startRecording={handleStartRecording}
+            stopRecording={handleStopRecording}
+            canStartRecording={isCreator && !isRecording}
+            canStopRecording={isCreator && isRecording}
+          />
+
+          {/* Participants Button */}
+          <button
+            onClick={() => setIsParticipantsOpen(!isParticipantsOpen)}
+            className={`rounded-full p-3 text-white transition ${
+              isParticipantsOpen
+                ? "bg-blue-600 hover:bg-blue-700"
+                : "bg-gray-700 hover:bg-gray-600"
+            }`}
+          >
+            <Users size={20} />
+          </button>
+
+          {/* Chat Button */}
           <button
             onClick={() => setIsChatOpen(!isChatOpen)}
-            className={`p-3 rounded-full ${
+            className={`rounded-full p-3 text-white transition ${
               isChatOpen
                 ? "bg-blue-600 hover:bg-blue-700"
                 : "bg-gray-700 hover:bg-gray-600"
-            } transition-colors duration-300`}
-            aria-label={isChatOpen ? "Close chat" : "Open chat"}
+            }`}
           >
-            <MessageSquare className="h-6 w-6" />
+            <MessageSquare size={20} />
           </button>
 
+          {/* Hangup/Leave Button */}
           <button
             onClick={handleLeaveRoom}
-            className="p-3 rounded-full bg-red-500 hover:bg-red-600 transition-colors duration-300"
-            aria-label="Leave call"
+            className="rounded-full bg-red-600 p-3 text-white hover:bg-red-700 transition"
           >
-            <Phone className="h-6 w-6 transform rotate-135" />
+            <Phone size={20} className="transform rotate-135" />
           </button>
         </div>
-      </footer>
+      </div>
     </div>
   );
 };
 
-// Component for remote participant video
-const RemoteVideo: React.FC<{ participant: Participant }> = ({
+// In the RemoteVideo component, add isRecordingVisible and isPinned as props
+const RemoteVideo: React.FC<RemoteVideoProps> = ({
   participant,
+  isRecordingVisible,
+  isPinned,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [streamActive, setStreamActive] = useState(true);
@@ -832,6 +1153,14 @@ const RemoteVideo: React.FC<{ participant: Participant }> = ({
 
   return (
     <div className="relative w-full h-full">
+      {/* Add recording indicator for participants when host is recording */}
+      {!participant.isCreator && isRecordingVisible && (
+        <div className="recording-indicator">
+          <div className="indicator-dot"></div>
+          <span className="indicator-text">Recording</span>
+        </div>
+      )}
+
       <video
         ref={videoRef}
         autoPlay
@@ -850,18 +1179,35 @@ const RemoteVideo: React.FC<{ participant: Participant }> = ({
             </div>
           ) : (
             <div className="h-16 w-16 rounded-full bg-gray-700 flex items-center justify-center">
-              <Users className="h-8 w-8 text-gray-500" />
+              <span className="text-2xl font-bold text-gray-500">
+                {participant.username.charAt(0).toUpperCase()}
+              </span>
             </div>
           )}
         </div>
       )}
 
+      {isPinned && (
+        <div
+          className="absolute top-3 left-3 bg-blue-500 rounded-full p-1.5"
+          title="This participant is pinned"
+        >
+          <Pin className="h-4 w-4" />
+        </div>
+      )}
+
+      <div className="absolute bottom-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-2 py-1">
+        <span className="text-sm font-medium">
+          {participant.username} {participant.isCreator ? "(Host)" : ""}
+        </span>
+      </div>
+
       {participant.isScreenSharing && (
         <div
-          className="absolute top-2 right-2 bg-blue-500 rounded-full p-1"
+          className="absolute top-3 right-3 bg-blue-500 rounded-full p-1.5"
           title="This participant is sharing their screen"
         >
-          <ScreenShare className="h-3 w-3" />
+          <ScreenShare className="h-4 w-4" />
         </div>
       )}
     </div>
@@ -1002,6 +1348,14 @@ const RemoteScreenShare: React.FC<RemoteScreenShareProps> = ({
           isLoading ? "opacity-0" : "opacity-100"
         }`}
       />
+
+      <div className="absolute top-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1 flex items-center gap-2">
+        <ScreenShare className="h-4 w-4 text-blue-400" />
+        <span className="text-sm font-medium">
+          {participant.username} is sharing screen
+        </span>
+      </div>
+
       {(isLoading || !isStreamActive) && (
         <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-70">
           <div className="text-center p-4">
