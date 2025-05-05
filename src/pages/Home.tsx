@@ -5,18 +5,33 @@ import { generateRandomId } from "../utils/helpers";
 
 const Home: React.FC = () => {
   const [roomId, setRoomId] = useState("");
+  const [username, setUsername] = useState("");
+  const [roomTitle, setRoomTitle] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const navigate = useNavigate();
 
   const handleCreateRoom = () => {
     const newRoomId = generateRandomId();
-    navigate(`/room/${newRoomId}?isCreator=true`);
+    const finalUsername =
+      username.trim() || `Host-${Math.floor(Math.random() * 1000)}`;
+    const finalTitle = roomTitle.trim() || "Untitled Meeting";
+    navigate(
+      `/room/${newRoomId}?isCreator=true&username=${encodeURIComponent(
+        finalUsername
+      )}&title=${encodeURIComponent(finalTitle)}`
+    );
   };
 
   const handleJoinRoom = (e: React.FormEvent) => {
     e.preventDefault();
     if (roomId.trim()) {
-      navigate(`/room/${roomId.trim()}?isCreator=false`);
+      const finalUsername =
+        username.trim() || `Guest-${Math.floor(Math.random() * 1000)}`;
+      navigate(
+        `/room/${roomId.trim()}?isCreator=false&username=${encodeURIComponent(
+          finalUsername
+        )}`
+      );
     }
   };
 
@@ -29,6 +44,23 @@ const Home: React.FC = () => {
         </div>
 
         <div className="p-6 space-y-6">
+          <div className="mb-4">
+            <label
+              htmlFor="username"
+              className="block text-sm font-medium text-gray-300 mb-2"
+            >
+              Your Name
+            </label>
+            <input
+              type="text"
+              id="username"
+              placeholder="Enter your name"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="w-full bg-gray-700 text-white border border-gray-600 rounded-lg py-3 px-4 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+
           <div className="flex flex-col space-y-4">
             <button
               onClick={() => setIsCreating(true)}
@@ -43,6 +75,22 @@ const Home: React.FC = () => {
                 <p className="text-gray-300 mb-4">
                   Ready to start your own room?
                 </p>
+                <div className="mb-4">
+                  <label
+                    htmlFor="roomTitle"
+                    className="block text-sm font-medium text-gray-300 mb-2"
+                  >
+                    Meeting Title
+                  </label>
+                  <input
+                    type="text"
+                    id="roomTitle"
+                    placeholder="Enter meeting title"
+                    value={roomTitle}
+                    onChange={(e) => setRoomTitle(e.target.value)}
+                    className="w-full bg-gray-700 text-white border border-gray-600 rounded-lg py-3 px-4 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
                 <button
                   onClick={handleCreateRoom}
                   className="bg-green-500 hover:bg-green-600 text-white font-medium py-3 px-4 rounded-lg transition-all duration-300"

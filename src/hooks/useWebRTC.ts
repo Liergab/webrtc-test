@@ -3,6 +3,7 @@ import Peer, { DataConnection, MediaConnection } from "peerjs";
 
 interface Participant {
   id: string;
+  username: string;
   stream: MediaStream;
   isCreator: boolean;
   isScreenSharing?: boolean;
@@ -17,6 +18,7 @@ interface Participant {
 interface UseWebRTCProps {
   roomId: string;
   isCreator: boolean;
+  username: string;
   onDataReceived?: (data: unknown) => void;
 }
 
@@ -35,6 +37,7 @@ interface DataMessage {
 export const useWebRTC = ({
   roomId,
   isCreator,
+  username,
   onDataReceived,
 }: UseWebRTCProps) => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -47,6 +50,22 @@ export const useWebRTC = ({
     "mesh"
   );
   const [transitionsEnabled, setTransitionsEnabled] = useState(true);
+  const [localUsername, setLocalUsername] = useState(username);
+
+  // Recording states
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [recordedChunks, setRecordedChunks] = useState<BlobPart[]>([]);
+
+  // Recording refs
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasStreamRef = useRef<MediaStream | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const audioDestinationRef = useRef<MediaStreamAudioDestinationNode | null>(
+    null
+  );
 
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<{
@@ -126,6 +145,9 @@ export const useWebRTC = ({
         iceCandidatePoolSize: 10,
       },
       debug: 2,
+      metadata: {
+        username: localUsername,
+      },
     });
 
     // Handle browser tab close/refresh
@@ -163,6 +185,9 @@ export const useWebRTC = ({
       peerRef.current = peer;
       setIsConnected(true);
 
+      // Update the username in metadata if it changes
+      peer.metadata = { username: localUsername };
+
       // Set up data connection handling
       peer.on("connection", (dataConn) => {
         handleDataConnection(dataConn);
@@ -199,6 +224,12 @@ export const useWebRTC = ({
       const initialState = existingParticipant ? "reconnecting" : "connecting";
       setParticipantTransition(call.peer, initialState);
 
+      // Try to get username from peer metadata if available
+      let peerUsername = "Guest";
+      if (call.metadata && call.metadata.username) {
+        peerUsername = call.metadata.username;
+      }
+
       // Handle incoming stream
       call.on("stream", (remoteStream) => {
         console.log("Received remote stream from:", call.peer);
@@ -227,6 +258,7 @@ export const useWebRTC = ({
                     stream: remoteStream,
                     streamType,
                     isScreenSharing: streamType === "screen",
+                    username: p.username || peerUsername,
                   }
                 : p
             );
@@ -248,10 +280,12 @@ export const useWebRTC = ({
             ...prev,
             {
               id: call.peer,
+              username: peerUsername,
               stream: remoteStream,
               isCreator: isCreatorPeer,
               isScreenSharing: streamType === "screen",
               streamType,
+              transitionState: "connecting",
             },
           ];
         });
@@ -302,7 +336,7 @@ export const useWebRTC = ({
       peer.destroy();
       setIsConnected(false);
     };
-  }, [localStream, roomId, isCreator]);
+  }, [localStream, roomId, isCreator, localUsername]);
 
   // Broadcast peer list to all connected participants
   const broadcastPeerList = () => {
@@ -365,6 +399,7 @@ export const useWebRTC = ({
             ...prev,
             {
               id: peerId,
+              username: localUsername,
               stream: remoteStream,
               isCreator: peerId.includes("-creator"),
             },
@@ -649,6 +684,7 @@ export const useWebRTC = ({
                   ...prev,
                   {
                     id: peerId,
+                    username: localUsername,
                     stream: remoteStream,
                     isCreator: peerId.includes("-creator"),
                     isScreenSharing: false,
@@ -664,6 +700,7 @@ export const useWebRTC = ({
                 ...newParticipants[existingIndex],
                 stream: remoteStream,
                 isScreenSharing: false,
+                username: localUsername,
               };
 
               return newParticipants;
@@ -717,6 +754,14 @@ export const useWebRTC = ({
         ...connectionsRef.current[dataConn.peer],
         dataConnection: dataConn,
       };
+
+      // Send my username to the peer immediately
+      dataConn.send({
+        type: "username",
+        username: localUsername,
+        peerId: peerRef.current?.id,
+        timestamp: Date.now(),
+      });
 
       // If we're the creator, send a list of all current participants to the new joiner
       if (isCreator) {
@@ -1338,7 +1383,13 @@ export const useWebRTC = ({
             }
 
             // Create a new connection
-            const call = peerRef.current!.call(reconnectingPeerId, localStream);
+            const call = peerRef.current!.call(
+              reconnectingPeerId,
+              localStream,
+              {
+                metadata: { username: localUsername },
+              }
+            );
 
             // Save the connection
             connectionsRef.current[reconnectingPeerId] = {
@@ -1366,6 +1417,7 @@ export const useWebRTC = ({
                     stream: remoteStream,
                     streamType: "camera",
                     isScreenSharing: false,
+                    username: localUsername,
                   };
                   return updated;
                 } else {
@@ -1374,6 +1426,7 @@ export const useWebRTC = ({
                     ...prev,
                     {
                       id: reconnectingPeerId,
+                      username: localUsername,
                       stream: remoteStream,
                       isCreator: reconnectingPeerId.includes("-creator"),
                       isScreenSharing: false,
@@ -1387,6 +1440,33 @@ export const useWebRTC = ({
         }
       }
 
+      // Handle username updates
+      if (data.type === "username" && data.username && data.peerId) {
+        const username = data.username;
+        const peerId = data.peerId;
+
+        console.log(`Received username '${username}' from peer ${peerId}`);
+
+        // Update participant's username
+        setParticipants((prev) =>
+          prev.map((p) => (p.id === peerId ? { ...p, username } : p))
+        );
+      }
+
+      // Add handler for recording status messages
+      if (data.type === "recording-status") {
+        const isRecordingActive = data.isRecording;
+        const hostName = data.host;
+
+        console.log(
+          `Recording ${
+            isRecordingActive ? "started" : "stopped"
+          } by host: ${hostName}`
+        );
+
+        // You could update some UI state here to show recording status to participants
+      }
+
       // Forward any data to the callback if provided
       if (
         onDataReceived &&
@@ -1398,7 +1478,8 @@ export const useWebRTC = ({
         data.type !== "request-stream-update" &&
         data.type !== "screen-share-started" &&
         data.type !== "request-screen-stream" &&
-        data.type !== "camera-stream-restored"
+        data.type !== "camera-stream-restored" &&
+        data.type !== "recording-status"
       ) {
         onDataReceived(data);
       }
@@ -1449,6 +1530,7 @@ export const useWebRTC = ({
           ...prev,
           {
             id: creatorId,
+            username: localUsername,
             stream: remoteStream,
             isCreator: true,
           },
@@ -1740,6 +1822,451 @@ export const useWebRTC = ({
     }
   };
 
+  // Update the setUsername function to allow username changes
+  const setUsername = (newUsername: string) => {
+    setLocalUsername(newUsername);
+
+    // Notify all participants about the username change
+    sendDataToAll({
+      type: "username",
+      username: newUsername,
+      peerId: peerRef.current?.id,
+      timestamp: Date.now(),
+    });
+  };
+
+  // Function to initialize recording canvas
+  const initializeRecordingCanvas = () => {
+    // Create canvas for recording
+    if (!canvasRef.current) {
+      canvasRef.current = document.createElement("canvas");
+      canvasRef.current.width = 1280;
+      canvasRef.current.height = 720;
+    }
+
+    // Create audio context for mixing audio streams
+    if (!audioContextRef.current) {
+      audioContextRef.current = new AudioContext();
+      audioDestinationRef.current =
+        audioContextRef.current.createMediaStreamDestination();
+    }
+  };
+
+  // Start recording function (only available to host)
+  const startRecording = () => {
+    if (!isCreator || isRecording || participants.length === 0) {
+      console.error(
+        "Cannot start recording: not a host, already recording, or no participants"
+      );
+      return;
+    }
+
+    try {
+      initializeRecordingCanvas();
+
+      // Get all streams for recording
+      const streams = [
+        ...participants.map((p) => p.stream),
+        localStream,
+      ].filter(Boolean) as MediaStream[];
+
+      if (streams.length === 0) {
+        setError("No streams available to record");
+        return;
+      }
+
+      // Set up canvas for visual recording
+      const canvas = canvasRef.current!;
+      const ctx = canvas.getContext("2d")!;
+
+      // Create a combined audio stream
+      const audioCtx = audioContextRef.current!;
+      const audioDestination = audioDestinationRef.current!;
+
+      // Connect all audio streams
+      streams.forEach((stream) => {
+        const audioTracks = stream.getAudioTracks();
+        if (audioTracks.length > 0) {
+          const source = audioCtx.createMediaStreamSource(stream);
+          source.connect(audioDestination);
+        }
+      });
+
+      // Create a canvas stream with the mixed audio
+      canvasStreamRef.current = canvas.captureStream(30);
+
+      // Add the mixed audio to the canvas stream
+      audioDestination.stream.getAudioTracks().forEach((track) => {
+        canvasStreamRef.current!.addTrack(track);
+      });
+
+      // Create layout calculator based on number of streams
+      const layoutStreams = (
+        ctx: CanvasRenderingContext2D,
+        streams: MediaStream[]
+      ) => {
+        const width = canvas.width;
+        const height = canvas.height;
+
+        // Clear canvas
+        ctx.fillStyle = "#1a1a1a";
+        ctx.fillRect(0, 0, width, height);
+
+        if (streams.length === 0) return;
+
+        // Determine grid layout based on number of streams
+        let rows = 1;
+        let cols = 1;
+
+        if (streams.length <= 1) {
+          rows = 1;
+          cols = 1;
+        } else if (streams.length <= 4) {
+          rows = 2;
+          cols = 2;
+        } else if (streams.length <= 9) {
+          rows = 3;
+          cols = 3;
+        } else {
+          rows = 4;
+          cols = Math.ceil(streams.length / 4);
+        }
+
+        const cellWidth = width / cols;
+        const cellHeight = height / rows;
+
+        // Draw each video stream
+        streams.forEach((stream, index) => {
+          if (index >= rows * cols) return;
+
+          const videoTracks = stream.getVideoTracks();
+          if (videoTracks.length === 0) return;
+
+          const row = Math.floor(index / cols);
+          const col = index % cols;
+
+          const participant = [
+            ...participants,
+            {
+              stream: localStream!,
+              id: "local",
+              username: localUsername,
+              isCreator: true,
+              isScreenSharing: false,
+            },
+          ].find((p) => p.stream === stream);
+
+          // Get video element or create one
+          let videoElem = document.getElementById(
+            `recording-video-${index}`
+          ) as HTMLVideoElement;
+          if (!videoElem) {
+            videoElem = document.createElement("video");
+            videoElem.id = `recording-video-${index}`;
+            videoElem.srcObject = stream;
+            videoElem.autoplay = true;
+            videoElem.muted = true;
+            document.body.appendChild(videoElem);
+            videoElem.style.display = "none";
+          }
+
+          // Draw video frame to canvas
+          ctx.drawImage(
+            videoElem,
+            col * cellWidth,
+            row * cellHeight,
+            cellWidth,
+            cellHeight
+          );
+
+          // Draw username
+          if (participant) {
+            ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+            ctx.fillRect(
+              col * cellWidth,
+              row * cellHeight + cellHeight - 30,
+              cellWidth,
+              30
+            );
+
+            ctx.fillStyle = "white";
+            ctx.font = "16px Arial";
+            ctx.textAlign = "left";
+            ctx.fillText(
+              participant.username + (participant.isCreator ? " (Host)" : ""),
+              col * cellWidth + 10,
+              row * cellHeight + cellHeight - 10
+            );
+
+            // Indicate if user is screen sharing
+            if (participant.isScreenSharing) {
+              ctx.fillStyle = "#0e71eb";
+              ctx.fillRect(
+                col * cellWidth + cellWidth - 110,
+                row * cellHeight + cellHeight - 30,
+                100,
+                20
+              );
+
+              ctx.fillStyle = "white";
+              ctx.font = "12px Arial";
+              ctx.textAlign = "center";
+              ctx.fillText(
+                "Screen Sharing",
+                col * cellWidth + cellWidth - 60,
+                row * cellHeight + cellHeight - 15
+              );
+            }
+          }
+        });
+
+        // Add recording indicator
+        ctx.fillStyle = "#e02828";
+        ctx.beginPath();
+        ctx.arc(30, 30, 10, 0, 2 * Math.PI);
+        ctx.fill();
+
+        // Add timestamp
+        const minutes = Math.floor(recordingTime / 60);
+        const seconds = recordingTime % 60;
+        ctx.fillStyle = "white";
+        ctx.font = "16px Arial";
+        ctx.textAlign = "left";
+        ctx.fillText(
+          `${minutes.toString().padStart(2, "0")}:${seconds
+            .toString()
+            .padStart(2, "0")}`,
+          50,
+          35
+        );
+      };
+
+      // Set up animation frame for continuous drawing
+      const drawFrames = () => {
+        if (!isRecording) return;
+
+        const allStreams = [
+          ...participants.map((p) => p.stream),
+          localStream,
+        ].filter(Boolean) as MediaStream[];
+
+        layoutStreams(ctx, allStreams);
+        requestAnimationFrame(drawFrames);
+      };
+
+      // Start the animation loop
+      drawFrames();
+
+      // Create MediaRecorder with canvas stream
+      const mediaRecorder = new MediaRecorder(canvasStreamRef.current!, {
+        mimeType: "video/webm;codecs=vp9,opus",
+        videoBitsPerSecond: 3000000, // 3 Mbps
+      });
+
+      mediaRecorderRef.current = mediaRecorder;
+
+      // Handle data available event to collect recorded chunks
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          setRecordedChunks((prev) => [...prev, event.data]);
+        }
+      };
+
+      // Start recording
+      mediaRecorder.start(1000); // Collect data every second
+      setIsRecording(true);
+      setRecordedChunks([]);
+
+      // Start timer
+      setRecordingTime(0);
+      recordingTimerRef.current = setInterval(() => {
+        setRecordingTime((prevTime) => prevTime + 1);
+      }, 1000);
+
+      // Notify participants that recording has started
+      sendDataToAll({
+        type: "recording-status",
+        isRecording: true,
+        host: localUsername,
+        timestamp: Date.now(),
+      });
+
+      console.log("Recording started");
+    } catch (err) {
+      console.error("Error starting recording:", err);
+      setError("Failed to start recording. Please try again.");
+    }
+  };
+
+  // Stop recording function
+  const stopRecording = () => {
+    if (!isRecording || !mediaRecorderRef.current) {
+      return;
+    }
+
+    try {
+      console.log(
+        "Stopping recording with current recorded chunks:",
+        recordedChunks.length
+      );
+
+      // Request the final data to be captured before stopping
+      if (mediaRecorderRef.current.state !== "inactive") {
+        // Force a final data capture
+        mediaRecorderRef.current.requestData();
+
+        // Small delay to ensure the final data is captured
+        setTimeout(() => {
+          if (mediaRecorderRef.current) {
+            // Now stop the recorder
+            mediaRecorderRef.current.stop();
+
+            // Stop timer
+            if (recordingTimerRef.current) {
+              clearInterval(recordingTimerRef.current);
+              recordingTimerRef.current = null;
+            }
+
+            // Clean up canvas stream
+            if (canvasStreamRef.current) {
+              canvasStreamRef.current
+                .getTracks()
+                .forEach((track) => track.stop());
+              canvasStreamRef.current = null;
+            }
+
+            // Clean up audio context
+            if (
+              audioContextRef.current &&
+              audioContextRef.current.state !== "closed"
+            ) {
+              audioContextRef.current.close();
+              audioContextRef.current = null;
+              audioDestinationRef.current = null;
+            }
+
+            // Remove video elements
+            document
+              .querySelectorAll('[id^="recording-video-"]')
+              .forEach((elem) => {
+                elem.remove();
+              });
+
+            // Notify participants that recording has stopped
+            sendDataToAll({
+              type: "recording-status",
+              isRecording: false,
+              host: localUsername,
+              timestamp: Date.now(),
+            });
+
+            setIsRecording(false);
+            console.log(
+              "Recording stopped, chunks collected:",
+              recordedChunks.length
+            );
+
+            // Save recording with a small delay to ensure all chunks are collected
+            setTimeout(() => saveRecording(), 300);
+          }
+        }, 500); // Give half a second for the final data capture
+      }
+    } catch (err) {
+      console.error("Error stopping recording:", err);
+      setError("Failed to stop recording properly.");
+    }
+  };
+
+  // Save recording function
+  const saveRecording = () => {
+    console.log(
+      "Attempting to save recording with chunks:",
+      recordedChunks.length
+    );
+
+    if (recordedChunks.length === 0) {
+      console.error("No recording data available to save");
+      setError("No recording data available to save");
+      return;
+    }
+
+    try {
+      // Create a blob from all chunks
+      const blob = new Blob(recordedChunks, {
+        type: "video/webm",
+      });
+
+      console.log("Created blob of size:", blob.size, "bytes");
+
+      if (blob.size < 1000) {
+        // Less than 1KB is probably an empty recording
+        console.error("Recording blob is too small, likely empty");
+        setError("Recording appears to be empty. Please try again.");
+        return;
+      }
+
+      // Create a timestamp for filename
+      const dateString = new Date().toISOString().replace(/[:.]/g, "-");
+      const filename = `webrtc-recording-${roomId}-${dateString}.webm`;
+
+      // Create download link
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      document.body.appendChild(a);
+      a.style.display = "none";
+      a.href = url;
+      a.download = filename;
+
+      // Trigger download
+      a.click();
+
+      // Clean up
+      setTimeout(() => {
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+
+        // Reset recorded chunks AFTER successful save
+        setRecordedChunks([]);
+      }, 100);
+
+      console.log("Recording saved successfully as:", filename);
+    } catch (err) {
+      console.error("Error saving recording:", err);
+      setError("Failed to save recording. Please try again.");
+    }
+  };
+
+  // Clean up recording resources on component unmount
+  useEffect(() => {
+    return () => {
+      if (recordingTimerRef.current) {
+        clearInterval(recordingTimerRef.current);
+      }
+
+      if (
+        mediaRecorderRef.current &&
+        mediaRecorderRef.current.state !== "inactive"
+      ) {
+        mediaRecorderRef.current.stop();
+      }
+
+      if (canvasStreamRef.current) {
+        canvasStreamRef.current.getTracks().forEach((track) => track.stop());
+      }
+
+      if (
+        audioContextRef.current &&
+        audioContextRef.current.state !== "closed"
+      ) {
+        audioContextRef.current.close();
+      }
+
+      document.querySelectorAll('[id^="recording-video-"]').forEach((elem) => {
+        elem.remove();
+      });
+    };
+  }, []);
+
   return {
     localStream,
     screenStream,
@@ -1756,5 +2283,14 @@ export const useWebRTC = ({
     reconnectAll,
     sendDataToAll,
     setTransitionsEnabled,
+    username: localUsername,
+    setUsername,
+    // Recording features
+    isRecording,
+    recordingTime,
+    startRecording,
+    stopRecording,
+    canStartRecording: isCreator && !isRecording,
+    canStopRecording: isCreator && isRecording,
   };
 };
