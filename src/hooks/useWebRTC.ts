@@ -1600,110 +1600,148 @@ export const useWebRTC = ({
     const creatorId = `${roomId}-creator`;
     console.log("Connecting to creator:", creatorId);
 
-    // Establish data connection with creator first
-    const dataConn = peer.connect(creatorId);
-    handleDataConnection(dataConn);
+    // Set up creator connection retry logic
+    let retryCount = 0;
+    const maxRetries = 3;
+    let retryInterval: any = null;
 
-    // Call options with improved connection chance
-    const callOptions = {
-      metadata: { username: localUsername },
-      sdpTransform: (sdp: string) => {
-        // This enhances NAT traversal
-        return sdp.replace(
-          /a=ice-options:trickle\r\n/g,
-          "a=ice-options:trickle\r\na=ice-options:renomination\r\n"
-        );
-      },
-    };
-
-    // Call the creator
-    const call = peer.call(creatorId, stream, callOptions);
-
-    // Save the connection
-    connectionsRef.current[creatorId] = {
-      dataConnection: dataConn,
-      mediaConnection: call,
-    };
-
-    // Set timeout to detect if connection is failing
-    const connectionTimeout = setTimeout(() => {
+    const attemptCreatorConnection = () => {
       console.log(
-        "Connection to creator timed out, trying with forced TURN relay..."
+        `Attempt ${retryCount + 1}/${maxRetries + 1} to connect to room creator`
       );
 
-      // Retry with forced TURN relay
-      try {
-        // Close existing call
-        call.close();
+      // Establish data connection with creator first
+      const dataConn = peer.connect(creatorId, {
+        reliable: true,
+        serialization: "json",
+      });
 
-        // Create new call with forced relay
-        const retryOptions = {
-          ...callOptions,
-          config: { iceTransportPolicy: "relay" },
+      // Handle connection open event
+      dataConn.on("open", () => {
+        console.log("Data connection with creator established successfully");
+
+        // Clear any retry timers since we connected successfully
+        if (retryInterval) {
+          clearInterval(retryInterval);
+          retryInterval = null;
+        }
+
+        // Proceed with normal connection
+        handleDataConnection(dataConn);
+
+        // Call the creator with our media stream
+        const callOptions = {
+          metadata: { username: localUsername },
+          sdpTransform: (sdp: string) => {
+            // This enhances NAT traversal
+            return sdp.replace(
+              /a=ice-options:trickle\r\n/g,
+              "a=ice-options:trickle\r\na=ice-options:renomination\r\n"
+            );
+          },
         };
 
-        const retryCall = peer.call(creatorId, stream, retryOptions);
+        // Make the call to the creator
+        const call = peer.call(creatorId, stream, callOptions);
 
-        // Update connection reference
+        // Save both connections
         connectionsRef.current[creatorId] = {
           dataConnection: dataConn,
-          mediaConnection: retryCall,
+          mediaConnection: call,
         };
 
-        // Set up handlers again
-        retryCall.on("stream", handleRemoteStream);
+        // Handle the stream
+        call.on("stream", (remoteStream) => {
+          console.log("Received creator stream");
 
-        retryCall.on("close", () => {
+          setParticipants((prev) => {
+            // If we already have this participant, don't add it again
+            if (prev.some((p) => p.id === creatorId)) {
+              return prev;
+            }
+
+            return [
+              ...prev,
+              {
+                id: creatorId,
+                username: localUsername,
+                stream: remoteStream,
+                isCreator: true,
+              },
+            ];
+          });
+        });
+
+        call.on("close", () => {
           handlePeerDisconnection(creatorId);
         });
 
-        retryCall.on("error", (err) => {
-          console.error("Retry call error:", err);
-          setError("Failed to connect to room host. Please try again.");
+        call.on("error", (err) => {
+          console.error("Call error with creator:", err);
+          setError(
+            "Media connection to host failed. Please refresh to try again."
+          );
         });
-      } catch (err) {
-        console.error("Error during creator connection retry:", err);
-        setError(
-          "Connection to room host failed. Please try refreshing the page."
-        );
-      }
-    }, 15000); // 15 seconds timeout
+      });
 
-    // Define stream handler to avoid duplication
-    const handleRemoteStream = (remoteStream: MediaStream) => {
-      console.log("Received creator stream");
-      clearTimeout(connectionTimeout); // Clear timeout on successful connection
+      // Handle connection error - crucial for retry logic
+      dataConn.on("error", (err) => {
+        console.error("Data connection error with creator:", err);
 
-      setParticipants((prev) => {
-        // If we already have this participant, don't add it again
-        if (prev.some((p) => p.id === creatorId)) {
-          return prev;
+        // If we haven't exceeded max retries, try again
+        if (retryCount < maxRetries) {
+          retryCount++;
+          console.log(
+            `Creator connection failed. Retrying in 3 seconds (${retryCount}/${maxRetries})`
+          );
+
+          // Update error state with retry information
+          setError(
+            `Room host not found. Retrying connection (${retryCount}/${maxRetries})...`
+          );
+        } else {
+          // If we've exhausted retries, show a more helpful error
+          console.error(
+            "Failed to connect to room creator after multiple attempts"
+          );
+          setError(
+            "Could not connect to room host. Either the room doesn't exist or the host is offline."
+          );
+
+          // Clean up retry interval
+          if (retryInterval) {
+            clearInterval(retryInterval);
+            retryInterval = null;
+          }
         }
+      });
 
-        return [
-          ...prev,
-          {
-            id: creatorId,
-            username: localUsername,
-            stream: remoteStream,
-            isCreator: true,
-          },
-        ];
+      // Handle connection close
+      dataConn.on("close", () => {
+        console.log("Data connection with creator closed");
       });
     };
 
-    // Handle the stream from the creator
-    call.on("stream", handleRemoteStream);
+    // Make first connection attempt immediately
+    attemptCreatorConnection();
 
-    call.on("close", () => {
-      clearTimeout(connectionTimeout); // Clear timeout on clean close
-      handlePeerDisconnection(creatorId);
-    });
-
-    call.on("error", (err) => {
-      console.error("Call error:", err);
-      setError("Failed to connect to room host. Please try again.");
-    });
+    // Set up retry mechanism
+    retryInterval = setInterval(() => {
+      if (retryCount < maxRetries) {
+        // Only retry if not connected
+        if (!connectionsRef.current[creatorId]?.dataConnection?.open) {
+          attemptCreatorConnection();
+        } else {
+          // If connected, clear the interval
+          clearInterval(retryInterval);
+          retryInterval = null;
+        }
+      } else {
+        // Clear interval after max retries
+        clearInterval(retryInterval);
+        retryInterval = null;
+      }
+    }, 3000); // Try every 3 seconds
   };
 
   // Process the list of peers received from the creator
