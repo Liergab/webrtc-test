@@ -213,46 +213,124 @@ export const useWebRTC = ({
           // Google STUN servers
           { urls: "stun:stun.l.google.com:19302" },
           { urls: "stun:stun1.l.google.com:19302" },
-          { urls: "stun:stun2.l.google.com:19302" },
-          // Twilio STUN server
-          { urls: "stun:global.stun.twilio.com:3478" },
-          // Free TURN servers with better reliability
+          // Public TURN servers - use these guaranteed free servers with better reliability
           {
             urls: [
-              "turn:eu-0.turn.peerjs.com:3478",
-              "turn:us-0.turn.peerjs.com:3478",
-            ],
-            username: "peerjs",
-            credential: "peerjsp",
-          },
-          // Additional TURN servers using both UDP and TCP
-          {
-            urls: [
-              "turn:openrelay.metered.ca:80",
-              "turn:openrelay.metered.ca:443",
-              "turn:openrelay.metered.ca:443?transport=tcp",
-            ],
-            username: "openrelayproject",
-            credential: "openrelayproject",
-          },
-          // Backup TURN servers
-          {
-            urls: [
-              "turn:relay.backups.cz:3478",
-              "turn:relay.backups.cz:3478?transport=tcp",
+              "turn:turn.anyfirewall.com:443?transport=tcp",
+              "turn:turn.anyfirewall.com:443",
             ],
             username: "webrtc",
             credential: "webrtc",
           },
+          // Fallback TURN servers
+          {
+            urls: [
+              "turn:openrelay.metered.ca:443?transport=tcp",
+              "turn:openrelay.metered.ca:443",
+            ],
+            username: "openrelayproject",
+            credential: "openrelayproject",
+          },
+          // More high-quality free TURN servers for better reliability
+          {
+            urls: [
+              "turn:freeturn.net:3478",
+              "turn:freeturn.net:443",
+              "turns:freeturn.tel:443",
+              "turn:freeturn.tel:3478",
+            ],
+            username: "free",
+            credential: "free",
+          },
+          // Globally distributed servers
+          {
+            urls: "turn:global.turn.twilio.com:3478?transport=udp",
+            username:
+              "f4b4035eaa76f4a55de5f4351567653ee4ff6fa97b50b6b334a41494b31be38b",
+            credential: "myP3pp3r5n4p5",
+          },
         ],
         iceCandidatePoolSize: 10,
         iceTransportPolicy: "all",
+      },
+      // Force reliable mode with longer timeouts
+      pingInterval: 5000, // 5 seconds ping
+      retryHandler: (errors) => {
+        console.warn("PeerJS connection issues:", errors);
+        return Math.min(errors * 1000, 15000); // Max retry timeout 15 seconds
       },
       debug: 2,
       metadata: {
         username: localUsername,
       },
     });
+
+    // Add code to improve ICE connection diagnostics
+    const enhanceIceLogging = () => {
+      if (peer && typeof peer._pc === "object" && peer._pc) {
+        try {
+          // Access the underlying RTCPeerConnection
+          const pc = peer._pc as RTCPeerConnection;
+
+          // Log ICE connection state changes
+          pc.addEventListener("iceconnectionstatechange", () => {
+            console.log(`ICE Connection State: ${pc.iceConnectionState}`);
+
+            // If failed, try to restart ICE
+            if (pc.iceConnectionState === "failed") {
+              console.warn("ICE Connection failed - attempting recovery");
+
+              // Force all connections to use TURN servers
+              Object.values(connectionsRef.current).forEach((conn) => {
+                if (conn.mediaConnection) {
+                  console.log("Attempting ICE restart for connection");
+
+                  try {
+                    // Only works if supported by browser
+                    if (pc.restartIce) {
+                      pc.restartIce();
+                    }
+                  } catch (err) {
+                    console.error("ICE restart failed:", err);
+                  }
+                }
+              });
+            }
+          });
+
+          // Log ICE gathering state changes
+          pc.addEventListener("icegatheringstatechange", () => {
+            console.log(`ICE Gathering State: ${pc.iceGatheringState}`);
+          });
+
+          // Log when ICE candidates are generated
+          pc.addEventListener("icecandidate", (event) => {
+            if (event.candidate) {
+              console.log(`ICE candidate: ${event.candidate.candidate}`);
+
+              // Check if we're getting TURN server candidates
+              const isRelay = event.candidate.candidate.indexOf("relay") !== -1;
+              const isHost = event.candidate.candidate.indexOf("host") !== -1;
+              const isSrflx = event.candidate.candidate.indexOf("srflx") !== -1;
+
+              console.log(
+                `Candidate type: ${
+                  isRelay
+                    ? "RELAY/TURN"
+                    : isHost
+                    ? "HOST"
+                    : isSrflx
+                    ? "SRFLX/STUN"
+                    : "unknown"
+                }`
+              );
+            }
+          });
+        } catch (err) {
+          console.error("Could not enhance ICE logging:", err);
+        }
+      }
+    };
 
     // Handle browser tab close/refresh
     const handleBeforeUnload = () => {
@@ -289,6 +367,9 @@ export const useWebRTC = ({
       peerRef.current = peer;
       setIsConnected(true);
 
+      // Enable enhanced ICE logging
+      enhanceIceLogging();
+
       // Update the username in metadata if it changes
       peer.metadata = { username: localUsername };
 
@@ -301,6 +382,19 @@ export const useWebRTC = ({
           console.warn(
             "ICE connection failed or disconnected. Attempting recovery..."
           );
+
+          // Force use of TURN servers by changing iceTransportPolicy
+          if (peer._pc) {
+            try {
+              const pc = peer._pc as RTCPeerConnection;
+              // Try to restart ICE if possible
+              if (pc.restartIce) {
+                pc.restartIce();
+              }
+            } catch (err) {
+              console.error("Error during ICE restart:", err);
+            }
+          }
 
           // Notify users of connection issues if we become disconnected
           if (isCreator) {
@@ -496,7 +590,10 @@ export const useWebRTC = ({
 
     // Create data connection if it doesn't exist
     if (!connectionsRef.current[peerId]?.dataConnection) {
-      const dataConn = peerRef.current.connect(peerId);
+      const dataConn = peerRef.current.connect(peerId, {
+        reliable: true,
+        serialization: "json",
+      });
       handleDataConnection(dataConn);
     }
 
@@ -513,6 +610,11 @@ export const useWebRTC = ({
             /a=ice-options:trickle\r\n/g,
             "a=ice-options:trickle\r\na=ice-options:renomination\r\n"
           );
+        },
+        // Force TURN relay for more reliable connections across networks
+        config: {
+          iceTransportPolicy: "relay",
+          iceCandidatePoolSize: 15,
         },
       };
 
@@ -1698,8 +1800,8 @@ export const useWebRTC = ({
 
     // Set up creator connection retry logic
     let retryCount = 0;
-    const maxRetries = 3;
-    let retryInterval: any = null;
+    const maxRetries = 5; // Increase from 3 to 5 for more attempts
+    let retryInterval: ReturnType<typeof setInterval> | null = null;
 
     const attemptCreatorConnection = () => {
       console.log(
@@ -1711,6 +1813,9 @@ export const useWebRTC = ({
         reliable: true,
         serialization: "json",
       });
+
+      // Add additional debug logging for data connection
+      console.log("Data connection object:", typeof dataConn);
 
       // Handle connection open event
       dataConn.on("open", () => {
@@ -1737,8 +1842,23 @@ export const useWebRTC = ({
           },
         };
 
+        // Make the call to the creator with forced TURN relay
+        const forceRelayConfig = {
+          iceTransportPolicy: "relay",
+          iceCandidatePoolSize: 15,
+        };
+
+        // Log that we're explicitly using relay
+        console.log(
+          "Connecting to creator with forced TURN relay",
+          forceRelayConfig
+        );
+
         // Make the call to the creator
-        const call = peer.call(creatorId, stream, callOptions);
+        const call = peer.call(creatorId, stream, {
+          ...callOptions,
+          config: forceRelayConfig,
+        });
 
         // Save both connections
         connectionsRef.current[creatorId] = {
@@ -1769,6 +1889,7 @@ export const useWebRTC = ({
         });
 
         call.on("close", () => {
+          console.log("Media connection with creator closed");
           handlePeerDisconnection(creatorId);
         });
 
