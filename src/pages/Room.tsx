@@ -76,6 +76,26 @@ interface RemoteVideoProps {
 }
 
 const Room: React.FC = () => {
+  // Detect if user is on mobile device
+  const [isMobile, setIsMobile] = useState(false);
+
+  // Check if device is mobile on component mount
+  useEffect(() => {
+    const checkMobile = () => {
+      const mobile =
+        /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+          navigator.userAgent
+        );
+      setIsMobile(mobile);
+      console.log("Device detected as:", mobile ? "mobile" : "desktop");
+    };
+
+    checkMobile();
+    window.addEventListener("resize", checkMobile);
+
+    return () => window.removeEventListener("resize", checkMobile);
+  }, []);
+
   // URL params and routing
   const { roomId } = useParams<{ roomId: string }>();
   const location = useLocation();
@@ -572,8 +592,10 @@ const Room: React.FC = () => {
       {/* Show recording banner */}
       <RecordingBanner />
 
-      {/* Room header */}
-      <header className="bg-gray-800 p-4 shadow-md z-30">
+      {/* Room header - make more compact on mobile */}
+      <header
+        className={`bg-gray-800 ${isMobile ? "p-2" : "p-4"} shadow-md z-30`}
+      >
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row justify-between items-center">
           <div className="flex items-center mb-3 sm:mb-0">
             <Video className="h-6 w-6 text-blue-500 mr-2" />
@@ -586,43 +608,55 @@ const Room: React.FC = () => {
           <div className="flex items-center space-x-2">
             <button
               onClick={() => setIsParticipantsOpen(!isParticipantsOpen)}
-              className={`flex items-center bg-gray-700 hover:bg-gray-600 rounded-lg px-3 py-2 transition-colors ${
+              className={`flex items-center bg-gray-700 hover:bg-gray-600 rounded-lg ${
+                isMobile ? "px-2 py-1 text-xs" : "px-3 py-2"
+              } transition-colors ${
                 isParticipantsOpen ? "bg-blue-600 hover:bg-blue-700" : ""
               }`}
             >
-              <Users className="h-4 w-4 text-blue-400 mr-2" />
-              <span className="text-sm">
-                {participants.length + 1} participants
+              <Users
+                className={`${
+                  isMobile ? "h-3 w-3" : "h-4 w-4"
+                } text-blue-400 mr-2`}
+              />
+              <span className={`${isMobile ? "text-xs" : "text-sm"}`}>
+                {participants.length + 1}
               </span>
             </button>
 
-            <div className="relative flex items-center bg-gray-700 rounded-lg px-3 py-2">
-              <span className="text-sm mr-2 truncate max-w-[180px]">
-                Room: {roomId}
-              </span>
-              <button
-                onClick={handleCopyRoomId}
-                className="text-blue-400 hover:text-blue-300 focus:outline-none"
-                aria-label="Copy room link"
-              >
-                <Copy className="h-4 w-4" />
-              </button>
-              {isCopied && (
-                <div className="absolute top-full left-0 mt-2 px-2 py-1 bg-gray-900 text-xs rounded">
-                  Copied!
-                </div>
-              )}
-            </div>
+            {!isMobile && (
+              <div className="relative flex items-center bg-gray-700 rounded-lg px-3 py-2">
+                <span className="text-sm mr-2 truncate max-w-[180px]">
+                  Room: {roomId}
+                </span>
+                <button
+                  onClick={handleCopyRoomId}
+                  className="text-blue-400 hover:text-blue-300 focus:outline-none"
+                  aria-label="Copy room link"
+                >
+                  <Copy className="h-4 w-4" />
+                </button>
+                {isCopied && (
+                  <div className="absolute top-full left-0 mt-2 px-2 py-1 bg-gray-900 text-xs rounded">
+                    Copied!
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </header>
 
-      {/* Main content with video grid and chat */}
-      <main className="flex-1 p-4 sm:p-6 pb-20 overflow-hidden bg-gray-900 flex">
-        {/* Video grid */}
+      {/* Main content - adjust layout for mobile */}
+      <main
+        className={`flex-1 ${
+          isMobile ? "p-1 pb-16" : "p-4 sm:p-6 pb-20"
+        } overflow-hidden bg-gray-900 flex ${isMobile ? "flex-col" : ""}`}
+      >
+        {/* Video grid - full width on mobile */}
         <div
-          className={`h-full ${
-            isChatOpen || isParticipantsOpen ? "w-3/4" : "w-full"
+          className={`${isMobile ? "h-auto w-full" : "h-full"} ${
+            (isChatOpen || isParticipantsOpen) && !isMobile ? "w-3/4" : "w-full"
           } transition-all duration-300`}
         >
           {/* Loading overlay during transitions */}
@@ -915,11 +949,11 @@ const Room: React.FC = () => {
           </div>
         </div>
 
-        {/* Sidebar (Chat or Participants) */}
+        {/* Sidebar - adjust for mobile */}
         <div
-          className={`w-1/4 ${
+          className={`${isMobile ? "w-full mt-2" : "w-1/4 ml-4"} ${
             isChatOpen || isParticipantsOpen ? "block" : "hidden"
-          } ml-4 flex flex-col z-20`}
+          } flex flex-col z-20 ${isMobile ? "max-h-36" : ""}`}
         >
           {isParticipantsOpen && (
             <div className="flex-1 mb-4">
@@ -945,7 +979,9 @@ const Room: React.FC = () => {
             <div
               className={`${
                 isParticipantsOpen ? "flex-1" : "flex-1"
-              } bg-gray-800 rounded-lg flex flex-col shadow-lg animate-fadeIn mb-16 chat-container`}
+              } bg-gray-800 rounded-lg flex flex-col shadow-lg animate-fadeIn ${
+                isMobile ? "mb-20 max-h-36" : "mb-16"
+              } chat-container`}
             >
               <div className="p-3 border-b border-gray-700 font-medium">
                 <h3>Room Chat</h3>
@@ -1004,98 +1040,125 @@ const Room: React.FC = () => {
         </div>
       </main>
 
-      {/* Controls - Fixed position at bottom */}
-      <div className="fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-80 p-4 flex justify-center z-10 fixed-controls">
-        <div className="flex space-x-4 items-center">
+      {/* Controls - make more compact on mobile */}
+      <div
+        className={`fixed bottom-0 left-0 right-0 bg-gray-900 bg-opacity-90 ${
+          isMobile ? "p-2" : "p-4"
+        } flex justify-center z-10 fixed-controls`}
+      >
+        <div className="flex space-x-2 items-center">
           {/* Mic Button */}
           <button
             onClick={handleToggleMic}
-            className="rounded-full bg-gray-700 p-3 text-white hover:bg-gray-600 transition"
+            className={`rounded-full bg-gray-700 ${
+              isMobile ? "p-2" : "p-3"
+            } text-white hover:bg-gray-600 transition`}
           >
             {isMicOn ? (
-              <Mic size={20} />
+              <Mic size={isMobile ? 16 : 20} />
             ) : (
-              <MicOff size={20} className="text-red-500" />
+              <MicOff size={isMobile ? 16 : 20} className="text-red-500" />
             )}
           </button>
 
           {/* Video Button */}
           <button
             onClick={handleToggleVideo}
-            className="rounded-full bg-gray-700 p-3 text-white hover:bg-gray-600 transition"
+            className={`rounded-full bg-gray-700 ${
+              isMobile ? "p-2" : "p-3"
+            } text-white hover:bg-gray-600 transition`}
           >
             {isVideoOn ? (
-              <Video size={20} />
+              <Video size={isMobile ? 16 : 20} />
             ) : (
-              <VideoOff size={20} className="text-red-500" />
+              <VideoOff size={isMobile ? 16 : 20} className="text-red-500" />
             )}
           </button>
 
-          {/* Screen Share Button */}
-          <button
-            onClick={handleToggleScreenShare}
-            className={`rounded-full p-3 text-white transition ${
-              isScreenSharing
-                ? "bg-blue-600 hover:bg-blue-700"
-                : "bg-gray-700 hover:bg-gray-600"
-            }`}
-            disabled={!!screenSharingParticipant}
-            title={
-              screenSharingParticipant
-                ? "Someone else is sharing their screen"
-                : isScreenSharing
-                ? "Stop sharing screen"
-                : "Share screen"
-            }
-          >
-            {isScreenSharing ? (
-              <div className="w-5 h-5 flex items-center justify-center">■</div>
-            ) : (
-              <ScreenShare size={20} />
-            )}
-          </button>
+          {/* Screen Share Button - hide on mobile if not supported */}
+          {(!isMobile ||
+            (isMobile && "getDisplayMedia" in navigator.mediaDevices)) && (
+            <button
+              onClick={handleToggleScreenShare}
+              className={`rounded-full ${
+                isMobile ? "p-2" : "p-3"
+              } text-white transition ${
+                isScreenSharing
+                  ? "bg-blue-600 hover:bg-blue-700"
+                  : "bg-gray-700 hover:bg-gray-600"
+              }`}
+              disabled={!!screenSharingParticipant}
+              title={
+                screenSharingParticipant
+                  ? "Someone else is sharing their screen"
+                  : isScreenSharing
+                  ? "Stop sharing screen"
+                  : "Share screen"
+              }
+            >
+              {isScreenSharing ? (
+                <div
+                  className={`${
+                    isMobile ? "w-4 h-4" : "w-5 h-5"
+                  } flex items-center justify-center`}
+                >
+                  ■
+                </div>
+              ) : (
+                <ScreenShare size={isMobile ? 16 : 20} />
+              )}
+            </button>
+          )}
 
-          {/* Recording Controls */}
-          <RecordingControls
-            isCreator={isCreator}
-            isRecording={isRecording || isRecordingVisible}
-            recordingTime={recordingTime}
-            startRecording={handleStartRecording}
-            stopRecording={handleStopRecording}
-            canStartRecording={isCreator && !isRecording}
-            canStopRecording={isCreator && isRecording}
-          />
+          {/* Only show recording controls on non-mobile */}
+          {!isMobile && (
+            <RecordingControls
+              isCreator={isCreator}
+              isRecording={isRecording || isRecordingVisible}
+              recordingTime={recordingTime}
+              startRecording={handleStartRecording}
+              stopRecording={handleStopRecording}
+              canStartRecording={isCreator && !isRecording}
+              canStopRecording={isCreator && isRecording}
+            />
+          )}
 
           {/* Participants Button */}
           <button
             onClick={() => setIsParticipantsOpen(!isParticipantsOpen)}
-            className={`rounded-full p-3 text-white transition ${
+            className={`rounded-full ${
+              isMobile ? "p-2" : "p-3"
+            } text-white transition ${
               isParticipantsOpen
                 ? "bg-blue-600 hover:bg-blue-700"
                 : "bg-gray-700 hover:bg-gray-600"
             }`}
           >
-            <Users size={20} />
+            <Users size={isMobile ? 16 : 20} />
           </button>
 
           {/* Chat Button */}
           <button
             onClick={() => setIsChatOpen(!isChatOpen)}
-            className={`rounded-full p-3 text-white transition ${
+            className={`rounded-full ${
+              isMobile ? "p-2" : "p-3"
+            } text-white transition ${
               isChatOpen
                 ? "bg-blue-600 hover:bg-blue-700"
                 : "bg-gray-700 hover:bg-gray-600"
             }`}
           >
-            <MessageSquare size={20} />
+            <MessageSquare size={isMobile ? 16 : 20} />
           </button>
 
           {/* Hangup/Leave Button */}
           <button
             onClick={handleLeaveRoom}
-            className="rounded-full bg-red-600 p-3 text-white hover:bg-red-700 transition"
+            className={`rounded-full bg-red-600 ${
+              isMobile ? "p-2" : "p-3"
+            } text-white hover:bg-red-700 transition`}
           >
-            <Phone size={20} className="transform rotate-135" />
+            <Phone size={isMobile ? 16 : 20} className="transform rotate-135" />
           </button>
         </div>
       </div>

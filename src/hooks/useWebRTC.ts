@@ -82,14 +82,110 @@ export const useWebRTC = ({
   useEffect(() => {
     const getMedia = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: true,
+        // Check if running on mobile
+        const isMobile =
+          /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+            navigator.userAgent
+          );
+
+        // Use different constraints based on device type
+        const constraints = {
           audio: true,
-        });
-        setLocalStream(stream);
+          video: isMobile
+            ? {
+                facingMode: "user", // Front camera on mobile
+                width: { ideal: 640, max: 1280 },
+                height: { ideal: 480, max: 720 },
+                frameRate: { ideal: 15, max: 24 },
+              }
+            : {
+                width: { ideal: 1280, max: 1920 },
+                height: { ideal: 720, max: 1080 },
+                frameRate: { ideal: 24, max: 30 },
+              },
+        };
+
+        console.log("Requesting media with constraints:", constraints);
+
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          setLocalStream(stream);
+        } catch (initialError) {
+          // If first attempt fails, try with minimal constraints
+          console.warn(
+            "Initial getUserMedia failed, trying fallback constraints:",
+            initialError
+          );
+
+          // Fallback to minimal video constraints
+          const fallbackConstraints = {
+            audio: true,
+            video: {
+              facingMode: "user",
+              width: { ideal: 320 },
+              height: { ideal: 240 },
+            },
+          };
+
+          try {
+            const fallbackStream = await navigator.mediaDevices.getUserMedia(
+              fallbackConstraints
+            );
+            console.log("Using fallback stream with minimal constraints");
+            setLocalStream(fallbackStream);
+          } catch (fallbackError) {
+            // If video fails completely, try audio only
+            console.warn(
+              "Video constraints failed, trying audio only:",
+              fallbackError
+            );
+
+            try {
+              const audioOnlyStream = await navigator.mediaDevices.getUserMedia(
+                { audio: true, video: false }
+              );
+              console.log("Using audio-only stream");
+              setLocalStream(audioOnlyStream);
+              setError("Video access failed. Using audio only mode.");
+            } catch (audioError) {
+              throw audioError; // Re-throw if even audio fails
+            }
+          }
+        }
       } catch (err) {
-        setError("Could not access media devices. Please check permissions.");
         console.error("Error accessing media devices:", err);
+
+        // Provide more helpful error message based on error type
+        if (err instanceof DOMException) {
+          if (
+            err.name === "NotAllowedError" ||
+            err.name === "PermissionDeniedError"
+          ) {
+            setError(
+              "Camera/microphone access denied. Please check your browser permissions."
+            );
+          } else if (
+            err.name === "NotFoundError" ||
+            err.name === "DevicesNotFoundError"
+          ) {
+            setError("No camera or microphone found. Please connect a device.");
+          } else if (
+            err.name === "NotReadableError" ||
+            err.name === "TrackStartError"
+          ) {
+            setError(
+              "Camera or microphone is already in use by another application."
+            );
+          } else if (err.name === "OverconstrainedError") {
+            setError(
+              "Your device doesn't support the requested video quality. Please try again."
+            );
+          } else {
+            setError(`Could not access media: ${err.name}`);
+          }
+        } else {
+          setError("Could not access media devices. Please check permissions.");
+        }
       }
     };
 
