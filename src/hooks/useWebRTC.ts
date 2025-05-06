@@ -118,31 +118,39 @@ export const useWebRTC = ({
           { urls: "stun:stun.l.google.com:19302" },
           { urls: "stun:stun1.l.google.com:19302" },
           { urls: "stun:stun2.l.google.com:19302" },
-          { urls: "stun:stun3.l.google.com:19302" },
-          { urls: "stun:stun4.l.google.com:19302" },
           // Twilio STUN server
           { urls: "stun:global.stun.twilio.com:3478" },
-          // OpenRelay STUN server
-          { urls: "stun:stun.openrelay.metered.ca:80" },
-          // OpenRelay TURN servers (UDP)
+          // Free TURN servers with better reliability
           {
-            urls: "turn:openrelay.metered.ca:80",
+            urls: [
+              "turn:eu-0.turn.peerjs.com:3478",
+              "turn:us-0.turn.peerjs.com:3478",
+            ],
+            username: "peerjs",
+            credential: "peerjsp",
+          },
+          // Additional TURN servers using both UDP and TCP
+          {
+            urls: [
+              "turn:openrelay.metered.ca:80",
+              "turn:openrelay.metered.ca:443",
+              "turn:openrelay.metered.ca:443?transport=tcp",
+            ],
             username: "openrelayproject",
             credential: "openrelayproject",
           },
+          // Backup TURN servers
           {
-            urls: "turn:openrelay.metered.ca:443",
-            username: "openrelayproject",
-            credential: "openrelayproject",
-          },
-          // OpenRelay TURN servers (TCP)
-          {
-            urls: "turn:openrelay.metered.ca:443?transport=tcp",
-            username: "openrelayproject",
-            credential: "openrelayproject",
+            urls: [
+              "turn:relay.backups.cz:3478",
+              "turn:relay.backups.cz:3478?transport=tcp",
+            ],
+            username: "webrtc",
+            credential: "webrtc",
           },
         ],
         iceCandidatePoolSize: 10,
+        iceTransportPolicy: "all",
       },
       debug: 2,
       metadata: {
@@ -187,6 +195,27 @@ export const useWebRTC = ({
 
       // Update the username in metadata if it changes
       peer.metadata = { username: localUsername };
+
+      // Monitor WebRTC connection state
+      peer.on("iceStateChanged", (state) => {
+        console.log(`ICE connection state changed to: ${state}`);
+
+        // If connection fails, try to use TURN servers
+        if (state === "failed" || state === "disconnected") {
+          console.warn(
+            "ICE connection failed or disconnected. Attempting recovery..."
+          );
+
+          // Notify users of connection issues if we become disconnected
+          if (isCreator) {
+            sendDataToAll({
+              type: "connection-status",
+              status: "reconnecting",
+              timestamp: Date.now(),
+            });
+          }
+        }
+      });
 
       // Set up data connection handling
       peer.on("connection", (dataConn) => {
@@ -377,7 +406,21 @@ export const useWebRTC = ({
 
     // Create media connection if it doesn't exist
     if (!connectionsRef.current[peerId]?.mediaConnection) {
-      const call = peerRef.current.call(peerId, localStream);
+      console.log("Creating new media connection with peer:", peerId);
+
+      // Add connection options with ICE restart to help force TURN usage when needed
+      const callOptions = {
+        metadata: { username: localUsername },
+        sdpTransform: (sdp: string) => {
+          // This helps increase chances of connection through NAT
+          return sdp.replace(
+            /a=ice-options:trickle\r\n/g,
+            "a=ice-options:trickle\r\na=ice-options:renomination\r\n"
+          );
+        },
+      };
+
+      const call = peerRef.current.call(peerId, localStream, callOptions);
 
       // Save the connection
       connectionsRef.current[peerId] = {
@@ -385,10 +428,60 @@ export const useWebRTC = ({
         mediaConnection: call,
       };
 
-      // Handle the stream
-      call.on("stream", (remoteStream) => {
-        console.log("Received stream from peer:", peerId);
+      // Add timeout to detect failed connections
+      const connectionTimeout = setTimeout(() => {
+        const existingConn = connectionsRef.current[peerId]?.mediaConnection;
+        if (existingConn === call) {
+          console.warn(
+            `Connection to ${peerId} timed out. Attempting reconnect...`
+          );
 
+          // Retry connection with forced TURN relay
+          const retryOptions = {
+            ...callOptions,
+            config: { iceTransportPolicy: "relay" },
+          };
+
+          try {
+            // Close existing connection
+            existingConn?.close();
+
+            // Create new connection with forced relay
+            const retryCall = peerRef.current?.call(
+              peerId,
+              localStream,
+              retryOptions
+            );
+            if (retryCall) {
+              console.log("Created retry connection with forced TURN relay");
+              connectionsRef.current[peerId] = {
+                ...connectionsRef.current[peerId],
+                mediaConnection: retryCall,
+              };
+
+              // Set up stream handler again
+              retryCall.on("stream", handleRemoteStream);
+
+              retryCall.on("close", () => {
+                handlePeerDisconnection(peerId);
+              });
+
+              retryCall.on("error", (err) => {
+                console.error("Retry call error with peer:", peerId, err);
+              });
+            }
+          } catch (err) {
+            console.error("Error during connection retry:", err);
+          }
+        }
+      }, 15000); // 15 seconds timeout
+
+      // Define stream handler to avoid duplication
+      const handleRemoteStream = (remoteStream: MediaStream) => {
+        console.log("Received stream from peer:", peerId);
+        clearTimeout(connectionTimeout); // Clear timeout on successful connection
+
+        // Add the rest of your existing stream handling code here
         setParticipants((prev) => {
           // If we already have this participant, don't add it again
           if (prev.some((p) => p.id === peerId)) {
@@ -405,9 +498,13 @@ export const useWebRTC = ({
             },
           ];
         });
-      });
+      };
+
+      // Handle the stream
+      call.on("stream", handleRemoteStream);
 
       call.on("close", () => {
+        clearTimeout(connectionTimeout); // Clear timeout on clean close
         handlePeerDisconnection(peerId);
       });
 
@@ -1507,8 +1604,20 @@ export const useWebRTC = ({
     const dataConn = peer.connect(creatorId);
     handleDataConnection(dataConn);
 
+    // Call options with improved connection chance
+    const callOptions = {
+      metadata: { username: localUsername },
+      sdpTransform: (sdp: string) => {
+        // This enhances NAT traversal
+        return sdp.replace(
+          /a=ice-options:trickle\r\n/g,
+          "a=ice-options:trickle\r\na=ice-options:renomination\r\n"
+        );
+      },
+    };
+
     // Call the creator
-    const call = peer.call(creatorId, stream);
+    const call = peer.call(creatorId, stream, callOptions);
 
     // Save the connection
     connectionsRef.current[creatorId] = {
@@ -1516,9 +1625,54 @@ export const useWebRTC = ({
       mediaConnection: call,
     };
 
-    // Handle the stream from the creator
-    call.on("stream", (remoteStream) => {
+    // Set timeout to detect if connection is failing
+    const connectionTimeout = setTimeout(() => {
+      console.log(
+        "Connection to creator timed out, trying with forced TURN relay..."
+      );
+
+      // Retry with forced TURN relay
+      try {
+        // Close existing call
+        call.close();
+
+        // Create new call with forced relay
+        const retryOptions = {
+          ...callOptions,
+          config: { iceTransportPolicy: "relay" },
+        };
+
+        const retryCall = peer.call(creatorId, stream, retryOptions);
+
+        // Update connection reference
+        connectionsRef.current[creatorId] = {
+          dataConnection: dataConn,
+          mediaConnection: retryCall,
+        };
+
+        // Set up handlers again
+        retryCall.on("stream", handleRemoteStream);
+
+        retryCall.on("close", () => {
+          handlePeerDisconnection(creatorId);
+        });
+
+        retryCall.on("error", (err) => {
+          console.error("Retry call error:", err);
+          setError("Failed to connect to room host. Please try again.");
+        });
+      } catch (err) {
+        console.error("Error during creator connection retry:", err);
+        setError(
+          "Connection to room host failed. Please try refreshing the page."
+        );
+      }
+    }, 15000); // 15 seconds timeout
+
+    // Define stream handler to avoid duplication
+    const handleRemoteStream = (remoteStream: MediaStream) => {
       console.log("Received creator stream");
+      clearTimeout(connectionTimeout); // Clear timeout on successful connection
 
       setParticipants((prev) => {
         // If we already have this participant, don't add it again
@@ -1536,9 +1690,13 @@ export const useWebRTC = ({
           },
         ];
       });
-    });
+    };
+
+    // Handle the stream from the creator
+    call.on("stream", handleRemoteStream);
 
     call.on("close", () => {
+      clearTimeout(connectionTimeout); // Clear timeout on clean close
       handlePeerDisconnection(creatorId);
     });
 
