@@ -96,6 +96,10 @@ const Room: React.FC = () => {
     null
   );
 
+  // Add loading state for initial connection
+  const [isConnecting, setIsConnecting] = useState(true);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+
   // Chat state - default open as requested
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [message, setMessage] = useState("");
@@ -157,6 +161,7 @@ const Room: React.FC = () => {
     startScreenShare,
     stopScreenShare,
     error,
+    isConnected,
     sendDataToAll,
   } = useWebRTC({
     roomId: roomId || "",
@@ -177,6 +182,44 @@ const Room: React.FC = () => {
 
   // Add a state to track if participants can see recording indicator
   const [isRecordingVisible, setIsRecordingVisible] = useState(false);
+
+  // Update UI state based on WebRTC connection status
+  useEffect(() => {
+    // If we're connected to the WebRTC session, we're no longer connecting
+    if (isConnected) {
+      setIsConnecting(false);
+      setConnectionError(null);
+    }
+
+    // If there's an error from WebRTC, update our error state
+    if (error) {
+      setConnectionError(error);
+      setIsConnecting(false);
+    }
+  }, [isConnected, error]);
+
+  // Redirect to home page after connection failure timeout
+  useEffect(() => {
+    let redirectTimer: number | null = null;
+
+    if (connectionError && connectionError.includes("failed") && !isCreator) {
+      // Redirect after 10 seconds for fatal errors
+      redirectTimer = window.setTimeout(() => {
+        navigate("/", {
+          state: {
+            error: connectionError,
+            roomId,
+          },
+        });
+      }, 10000);
+    }
+
+    return () => {
+      if (redirectTimer) {
+        clearTimeout(redirectTimer);
+      }
+    };
+  }, [connectionError, navigate, roomId, isCreator]);
 
   // Helper to handle pinning a participant
   const handlePinParticipant = (id: string) => {
@@ -489,6 +532,43 @@ const Room: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col main-container">
+      {/* Show connection loading state */}
+      {isConnecting && (
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-90 z-50 flex items-center justify-center">
+          <div className="bg-gray-800 rounded-lg p-6 max-w-md text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mx-auto mb-4"></div>
+            <h2 className="text-xl font-bold mb-2">Connecting to Room</h2>
+            <p className="text-gray-300">
+              {isCreator
+                ? "Setting up your room..."
+                : "Connecting to the host..."}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Show connection error */}
+      {connectionError && !isConnecting && (
+        <div className="fixed inset-0 bg-gray-900 bg-opacity-90 z-50 flex items-center justify-center">
+          <div className="bg-gray-800 rounded-lg p-6 max-w-md text-center">
+            <div className="text-red-500 text-5xl mb-4">⚠️</div>
+            <h2 className="text-xl font-bold mb-2">Connection Error</h2>
+            <p className="text-gray-300 mb-4">{connectionError}</p>
+            {connectionError.includes("failed") && (
+              <p className="text-gray-400 text-sm">
+                Redirecting to home page in 10 seconds...
+              </p>
+            )}
+            <button
+              onClick={() => navigate("/")}
+              className="mt-4 bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded"
+            >
+              Return to Home
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Show recording banner */}
       <RecordingBanner />
 
