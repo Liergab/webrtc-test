@@ -1,6 +1,14 @@
 import React, { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { Video, Users, Plus, AlertCircle } from "lucide-react";
+import {
+  Video,
+  Users,
+  Plus,
+  AlertCircle,
+  AlertTriangle,
+  Camera,
+  Mic,
+} from "lucide-react";
 import { generateRandomId } from "../utils/helpers";
 
 const Home: React.FC = () => {
@@ -9,8 +17,19 @@ const Home: React.FC = () => {
   const [roomTitle, setRoomTitle] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(false);
+  const [showPermissionsPrompt, setShowPermissionsPrompt] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+
+  // Check if device is mobile
+  useEffect(() => {
+    const mobile =
+      /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        navigator.userAgent
+      );
+    setIsMobile(mobile);
+  }, []);
 
   // Check for error state passed from room component on redirect
   useEffect(() => {
@@ -25,16 +44,56 @@ const Home: React.FC = () => {
     }
   }, [location]);
 
+  // Function to request permissions on mobile before creating/joining
+  const checkPermissions = async (callback: () => void) => {
+    if (!isMobile) {
+      // On desktop, proceed directly
+      callback();
+      return;
+    }
+
+    // On mobile, show permissions prompt first
+    setShowPermissionsPrompt(true);
+  };
+
+  // Function to test media access and then proceed
+  const testMediaAndProceed = async (callback: () => void) => {
+    try {
+      // Try to get minimal video and audio just to test permissions
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" },
+        audio: true,
+      });
+
+      // Stop tracks immediately - we just needed the permission check
+      stream.getTracks().forEach((track) => track.stop());
+
+      // Permissions granted, proceed
+      setShowPermissionsPrompt(false);
+      callback();
+    } catch (err) {
+      console.error("Permission error:", err);
+      setErrorMessage(
+        "Camera or microphone permission denied. Please allow access to use the app."
+      );
+      setShowPermissionsPrompt(false);
+    }
+  };
+
   const handleCreateRoom = () => {
-    const newRoomId = generateRandomId();
-    const finalUsername =
-      username.trim() || `Host-${Math.floor(Math.random() * 1000)}`;
-    const finalTitle = roomTitle.trim() || "Untitled Meeting";
-    navigate(
-      `/room/${newRoomId}?isCreator=true&username=${encodeURIComponent(
-        finalUsername
-      )}&title=${encodeURIComponent(finalTitle)}`
-    );
+    const createRoom = () => {
+      const newRoomId = generateRandomId();
+      const finalUsername =
+        username.trim() || `Host-${Math.floor(Math.random() * 1000)}`;
+      const finalTitle = roomTitle.trim() || "Untitled Meeting";
+      navigate(
+        `/room/${newRoomId}?isCreator=true&username=${encodeURIComponent(
+          finalUsername
+        )}&title=${encodeURIComponent(finalTitle)}`
+      );
+    };
+
+    checkPermissions(createRoom);
   };
 
   const handleJoinRoom = (e: React.FormEvent) => {
@@ -46,17 +105,72 @@ const Home: React.FC = () => {
       return;
     }
 
-    const finalUsername =
-      username.trim() || `Guest-${Math.floor(Math.random() * 1000)}`;
-    navigate(
-      `/room/${roomId.trim()}?isCreator=false&username=${encodeURIComponent(
-        finalUsername
-      )}`
-    );
+    const joinRoom = () => {
+      const finalUsername =
+        username.trim() || `Guest-${Math.floor(Math.random() * 1000)}`;
+      navigate(
+        `/room/${roomId.trim()}?isCreator=false&username=${encodeURIComponent(
+          finalUsername
+        )}`
+      );
+    };
+
+    checkPermissions(joinRoom);
   };
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center p-4 sm:p-8">
+      {/* Mobile Permissions Prompt */}
+      {showPermissionsPrompt && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
+          <div className="bg-gray-800 rounded-lg p-6 max-w-md mx-4">
+            <div className="flex justify-center mb-4">
+              <AlertTriangle className="h-16 w-16 text-yellow-500" />
+            </div>
+            <h2 className="text-xl font-bold mb-4 text-center">
+              Camera & Microphone Access
+            </h2>
+            <p className="mb-6 text-center">
+              This app needs access to your camera and microphone to work
+              properly. You'll be asked to grant permissions next.
+            </p>
+            <div className="flex flex-col space-y-2 mb-6">
+              <div className="bg-gray-700 rounded-lg p-3 flex items-center">
+                <Camera className="h-5 w-5 text-blue-400 mr-3" />
+                <span>Camera access required</span>
+              </div>
+              <div className="bg-gray-700 rounded-lg p-3 flex items-center">
+                <Mic className="h-5 w-5 text-blue-400 mr-3" />
+                <span>Microphone access required</span>
+              </div>
+            </div>
+            <div className="flex justify-between">
+              <button
+                onClick={() => setShowPermissionsPrompt(false)}
+                className="bg-gray-600 hover:bg-gray-700 text-white py-2 px-4 rounded"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() =>
+                  testMediaAndProceed(
+                    showPermissionsPrompt
+                      ? isCreating
+                        ? handleCreateRoom
+                        : () =>
+                            handleJoinRoom({ preventDefault: () => {} } as any)
+                      : () => {}
+                  )
+                }
+                className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded"
+              >
+                Allow Access
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="w-full max-w-md bg-gray-800 rounded-lg shadow-xl overflow-hidden">
         <div className="bg-blue-600 p-6 flex items-center justify-center">
           <Video className="h-12 w-12 mr-4" />
