@@ -79,6 +79,82 @@ const Room: React.FC = () => {
   // Detect if user is on mobile device
   const [isMobile, setIsMobile] = useState(false);
 
+  // Add network diagnostics state
+  const [networkStatus, setNetworkStatus] = useState<{
+    online: boolean;
+    type: string | null;
+    downlink: number | null;
+    rtt: number | null;
+  }>({
+    online: navigator.onLine,
+    type: (navigator.connection as any)?.type || null,
+    downlink: (navigator.connection as any)?.downlink || null,
+    rtt: (navigator.connection as any)?.rtt || null,
+  });
+
+  const [connectionQuality, setConnectionQuality] = useState<
+    "good" | "fair" | "poor" | "unknown"
+  >("unknown");
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+
+  // Run network connection check periodically
+  useEffect(() => {
+    const checkNetworkStatus = () => {
+      const connection = navigator.connection as any;
+
+      setNetworkStatus({
+        online: navigator.onLine,
+        type: connection?.type || null,
+        downlink: connection?.downlink || null,
+        rtt: connection?.rtt || null,
+      });
+
+      // Determine connection quality
+      if (!navigator.onLine) {
+        setConnectionQuality("poor");
+      } else if (connection) {
+        if (connection.rtt && connection.downlink) {
+          if (connection.rtt < 100 && connection.downlink > 5) {
+            setConnectionQuality("good");
+          } else if (connection.rtt < 300 && connection.downlink > 1) {
+            setConnectionQuality("fair");
+          } else {
+            setConnectionQuality("poor");
+          }
+        } else {
+          setConnectionQuality("unknown");
+        }
+      }
+    };
+
+    // Check immediately and on network changes
+    checkNetworkStatus();
+
+    window.addEventListener("online", checkNetworkStatus);
+    window.addEventListener("offline", checkNetworkStatus);
+
+    // Check if Network Information API is available
+    if ((navigator as any).connection) {
+      const connection = (navigator as any).connection;
+      connection.addEventListener("change", checkNetworkStatus);
+
+      return () => {
+        connection.removeEventListener("change", checkNetworkStatus);
+        window.removeEventListener("online", checkNetworkStatus);
+        window.removeEventListener("offline", checkNetworkStatus);
+      };
+    }
+
+    // Run every 30 seconds anyway
+    const intervalId = setInterval(checkNetworkStatus, 30000);
+
+    return () => {
+      window.removeEventListener("online", checkNetworkStatus);
+      window.removeEventListener("offline", checkNetworkStatus);
+      clearInterval(intervalId);
+    };
+  }, []);
+
   // Check if device is mobile on component mount
   useEffect(() => {
     const checkMobile = () => {
@@ -592,6 +668,75 @@ const Room: React.FC = () => {
       {/* Show recording banner */}
       <RecordingBanner />
 
+      {/* Add network diagnostics panel */}
+      {showDiagnostics && (
+        <div className="fixed top-16 right-4 bg-gray-800 rounded-lg p-4 z-40 shadow-lg max-w-xs">
+          <h3 className="text-lg font-semibold mb-2">Network Diagnostics</h3>
+          <ul className="space-y-2 text-sm">
+            <li className="flex justify-between">
+              <span>Status:</span>
+              <span
+                className={
+                  networkStatus.online ? "text-green-400" : "text-red-400"
+                }
+              >
+                {networkStatus.online ? "Online" : "Offline"}
+              </span>
+            </li>
+            <li className="flex justify-between">
+              <span>Connection:</span>
+              <span
+                className={
+                  connectionQuality === "good"
+                    ? "text-green-400"
+                    : connectionQuality === "fair"
+                    ? "text-yellow-400"
+                    : connectionQuality === "poor"
+                    ? "text-red-400"
+                    : "text-gray-400"
+                }
+              >
+                {connectionQuality === "good"
+                  ? "Good"
+                  : connectionQuality === "fair"
+                  ? "Fair"
+                  : connectionQuality === "poor"
+                  ? "Poor"
+                  : "Unknown"}
+              </span>
+            </li>
+            {networkStatus.type && (
+              <li className="flex justify-between">
+                <span>Network Type:</span>
+                <span>{networkStatus.type}</span>
+              </li>
+            )}
+            {networkStatus.downlink && (
+              <li className="flex justify-between">
+                <span>Bandwidth:</span>
+                <span>{networkStatus.downlink} Mbps</span>
+              </li>
+            )}
+            {networkStatus.rtt && (
+              <li className="flex justify-between">
+                <span>Latency:</span>
+                <span>{networkStatus.rtt} ms</span>
+              </li>
+            )}
+            <li className="flex justify-between">
+              <span>Peers Connected:</span>
+              <span>{participants.length}</span>
+            </li>
+          </ul>
+          <button
+            onClick={() => setShowDiagnostics(false)}
+            className="w-full text-center mt-4 bg-gray-700 hover:bg-gray-600 text-xs py-1 rounded"
+          >
+            Close
+          </button>
+        </div>
+      )}
+
       {/* Room header - make more compact on mobile */}
       <header
         className={`bg-gray-800 ${isMobile ? "p-2" : "p-4"} shadow-md z-30`}
@@ -606,6 +751,21 @@ const Room: React.FC = () => {
           </div>
 
           <div className="flex items-center space-x-2">
+            {/* Add connection quality indicator */}
+            <div
+              className={`h-3 w-3 rounded-full ${
+                connectionQuality === "good"
+                  ? "bg-green-500"
+                  : connectionQuality === "fair"
+                  ? "bg-yellow-500"
+                  : connectionQuality === "poor"
+                  ? "bg-red-500"
+                  : "bg-gray-500"
+              } cursor-pointer`}
+              onClick={() => setShowDiagnostics(!showDiagnostics)}
+              title="Click to view network diagnostics"
+            ></div>
+
             <button
               onClick={() => setIsParticipantsOpen(!isParticipantsOpen)}
               className={`flex items-center bg-gray-700 hover:bg-gray-600 rounded-lg ${
@@ -651,179 +811,141 @@ const Room: React.FC = () => {
       <main
         className={`flex-1 ${
           isMobile ? "p-1 pb-16" : "p-4 sm:p-6 pb-20"
-        } overflow-hidden bg-gray-900 flex ${isMobile ? "flex-col" : ""}`}
+        } overflow-hidden bg-gray-900 flex flex-col`}
       >
-        {/* Video grid - full width on mobile */}
-        <div
-          className={`${isMobile ? "h-auto w-full" : "h-full"} ${
-            (isChatOpen || isParticipantsOpen) && !isMobile ? "w-3/4" : "w-full"
-          } transition-all duration-300`}
-        >
-          {/* Loading overlay during transitions */}
-          {isTransitioning && (
-            <div className="absolute inset-0 bg-gray-900 bg-opacity-70 z-10 flex items-center justify-center transition-opacity duration-500">
-              <div className="text-center">
-                <div
-                  className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-500 border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite]"
-                  role="status"
-                >
-                  <span className="!absolute !-m-px !h-px !w-px !overflow-hidden !whitespace-nowrap !border-0 !p-0 ![clip:rect(0,0,0,0)]">
-                    Loading...
-                  </span>
+        {/* Connection status banner for poor connectivity */}
+        {connectionQuality === "poor" && (
+          <div className="w-full bg-yellow-600 text-white text-sm py-1 px-4 mb-2 rounded">
+            Poor network connection detected. Video quality might be reduced.
+          </div>
+        )}
+
+        {/* Container for video and sidebars */}
+        <div className={`flex flex-1 ${isMobile ? "flex-col" : "flex-row"}`}>
+          {/* Video grid - full width on mobile */}
+          <div
+            className={`${isMobile ? "h-auto w-full" : "h-full"} ${
+              (isChatOpen || isParticipantsOpen) && !isMobile
+                ? "w-3/4"
+                : "w-full"
+            } transition-all duration-300`}
+          >
+            {/* Loading overlay during transitions */}
+            {isTransitioning && (
+              <div className="absolute inset-0 bg-gray-900 bg-opacity-70 z-10 flex items-center justify-center transition-opacity duration-500">
+                <div className="text-center">
+                  <div
+                    className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-blue-500 border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite]"
+                    role="status"
+                  >
+                    <span className="!absolute !-m-px !h-px !w-px !overflow-hidden !whitespace-nowrap !border-0 !p-0 ![clip:rect(0,0,0,0)]">
+                      Loading...
+                    </span>
+                  </div>
+                  <p className="mt-2">Reconnecting video streams...</p>
                 </div>
-                <p className="mt-2">Reconnecting video streams...</p>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Zoom-like layout with main view and side thumbnails */}
-          <div className="h-full flex flex-col">
-            {/* Main video display */}
-            <div className="flex-1 bg-gray-800 rounded-lg overflow-hidden shadow-lg relative mb-2">
-              {/* Determine main display based on pinned participant, screen sharing, or creator status */}
-              {(() => {
-                // If local user is screen sharing, prioritize showing that
-                if (isScreenSharing) {
-                  return (
-                    <div className="h-full w-full relative">
-                      <video
-                        ref={screenVideoRef}
-                        autoPlay
-                        playsInline
-                        className="w-full h-full object-contain bg-black"
-                      />
-                      <div className="absolute top-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1 flex items-center gap-2">
-                        <ScreenShare className="h-4 w-4 text-blue-400" />
-                        <span className="text-sm font-medium">
-                          You are sharing your screen
-                        </span>
-                      </div>
-                    </div>
-                  );
-                }
-
-                // If there's a pinned participant
-                if (pinnedParticipantId) {
-                  // If pinned is the local user
-                  if (pinnedParticipantId === "local") {
+            {/* Zoom-like layout with main view and side thumbnails */}
+            <div className="h-full flex flex-col">
+              {/* Main video display */}
+              <div className="flex-1 bg-gray-800 rounded-lg overflow-hidden shadow-lg relative mb-2">
+                {/* Determine main display based on pinned participant, screen sharing, or creator status */}
+                {(() => {
+                  // If local user is screen sharing, prioritize showing that
+                  if (isScreenSharing) {
                     return (
                       <div className="h-full w-full relative">
-                        {/* Use key to force re-render when pinned/unpinned */}
                         <video
-                          key={`pinned-local-${Date.now()}`}
-                          ref={localVideoRef}
+                          ref={screenVideoRef}
                           autoPlay
                           playsInline
-                          muted
-                          className={`w-full h-full object-cover ${
-                            !isVideoOn ? "hidden" : ""
-                          }`}
+                          className="w-full h-full object-contain bg-black"
                         />
-
-                        {!isVideoOn && (
-                          <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
-                            <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
-                              <span className="text-4xl font-bold text-gray-500">
-                                {usernameFromUrl.charAt(0).toUpperCase()}
-                              </span>
-                            </div>
-                          </div>
-                        )}
-
-                        <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1 flex items-center">
-                          <span className="text-base font-medium">
-                            {usernameFromUrl} (You)
+                        <div className="absolute top-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1 flex items-center gap-2">
+                          <ScreenShare className="h-4 w-4 text-blue-400" />
+                          <span className="text-sm font-medium">
+                            You are sharing your screen
                           </span>
-                          <Pin className="h-3 w-3 ml-2 text-blue-400" />
                         </div>
-
-                        {!isMicOn && (
-                          <div className="absolute top-4 right-4 bg-red-500 rounded-full p-2">
-                            <MicOff className="h-4 w-4" />
-                          </div>
-                        )}
                       </div>
                     );
                   }
 
-                  // If pinned is another participant
-                  const pinnedParticipant = participants.find(
-                    (p) => p.id === pinnedParticipantId
-                  );
-                  if (pinnedParticipant) {
-                    return (
-                      <div className="h-full w-full relative">
-                        <RemoteVideo
-                          participant={pinnedParticipant}
-                          isRecordingVisible={isRecordingVisible}
-                          isPinned={true}
-                        />
-                      </div>
-                    );
-                  }
-                }
+                  // If there's a pinned participant
+                  if (pinnedParticipantId) {
+                    // If pinned is the local user
+                    if (pinnedParticipantId === "local") {
+                      return (
+                        <div className="h-full w-full relative">
+                          {/* Use key to force re-render when pinned/unpinned */}
+                          <video
+                            key={`pinned-local-${Date.now()}`}
+                            ref={localVideoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            className={`w-full h-full object-cover ${
+                              !isVideoOn ? "hidden" : ""
+                            }`}
+                          />
 
-                // If someone else is screen sharing, show that
-                if (screenSharingParticipant) {
-                  return (
-                    <RemoteScreenShare
-                      participant={screenSharingParticipant}
-                      onReconnectRequest={requestScreenShareReconnect}
-                    />
-                  );
-                }
+                          {!isVideoOn && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
+                              <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
+                                <span className="text-4xl font-bold text-gray-500">
+                                  {usernameFromUrl.charAt(0).toUpperCase()}
+                                </span>
+                              </div>
+                            </div>
+                          )}
 
-                // Default: if creator, show them, otherwise show creator
-                if (isCreator) {
-                  return (
-                    <div className="h-full w-full relative">
-                      <video
-                        ref={localVideoRef}
-                        autoPlay
-                        playsInline
-                        muted
-                        className={`w-full h-full object-cover ${
-                          !isVideoOn ? "hidden" : ""
-                        }`}
-                      />
-
-                      {!isVideoOn && (
-                        <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
-                          <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
-                            <span className="text-4xl font-bold text-gray-500">
-                              {usernameFromUrl.charAt(0).toUpperCase()}
+                          <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1 flex items-center">
+                            <span className="text-base font-medium">
+                              {usernameFromUrl} (You)
                             </span>
+                            <Pin className="h-3 w-3 ml-2 text-blue-400" />
                           </div>
-                        </div>
-                      )}
 
-                      <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1">
-                        <span className="text-base font-medium">
-                          {usernameFromUrl} (Host)
-                        </span>
-                      </div>
-
-                      {!isMicOn && (
-                        <div className="absolute top-4 right-4 bg-red-500 rounded-full p-2">
-                          <MicOff className="h-4 w-4" />
+                          {!isMicOn && (
+                            <div className="absolute top-4 right-4 bg-red-500 rounded-full p-2">
+                              <MicOff className="h-4 w-4" />
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  );
-                } else {
-                  const creator = participants.find((p) => p.isCreator);
-                  if (creator) {
-                    return (
-                      <div className="h-full w-full relative">
-                        <RemoteVideo
-                          participant={creator}
-                          isRecordingVisible={isRecordingVisible}
-                          isPinned={false}
-                        />
-                      </div>
+                      );
+                    }
+
+                    // If pinned is another participant
+                    const pinnedParticipant = participants.find(
+                      (p) => p.id === pinnedParticipantId
                     );
-                  } else {
-                    // Fallback to local user if creator not found
+                    if (pinnedParticipant) {
+                      return (
+                        <div className="h-full w-full relative">
+                          <RemoteVideo
+                            participant={pinnedParticipant}
+                            isRecordingVisible={isRecordingVisible}
+                            isPinned={true}
+                          />
+                        </div>
+                      );
+                    }
+                  }
+
+                  // If someone else is screen sharing, show that
+                  if (screenSharingParticipant) {
+                    return (
+                      <RemoteScreenShare
+                        participant={screenSharingParticipant}
+                        onReconnectRequest={requestScreenShareReconnect}
+                      />
+                    );
+                  }
+
+                  // Default: if creator, show them, otherwise show creator
+                  if (isCreator) {
                     return (
                       <div className="h-full w-full relative">
                         <video
@@ -848,7 +970,7 @@ const Room: React.FC = () => {
 
                         <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1">
                           <span className="text-base font-medium">
-                            {usernameFromUrl} (You)
+                            {usernameFromUrl} (Host)
                           </span>
                         </div>
 
@@ -859,184 +981,234 @@ const Room: React.FC = () => {
                         )}
                       </div>
                     );
+                  } else {
+                    const creator = participants.find((p) => p.isCreator);
+                    if (creator) {
+                      return (
+                        <div className="h-full w-full relative">
+                          <RemoteVideo
+                            participant={creator}
+                            isRecordingVisible={isRecordingVisible}
+                            isPinned={false}
+                          />
+                        </div>
+                      );
+                    } else {
+                      // Fallback to local user if creator not found
+                      return (
+                        <div className="h-full w-full relative">
+                          <video
+                            ref={localVideoRef}
+                            autoPlay
+                            playsInline
+                            muted
+                            className={`w-full h-full object-cover ${
+                              !isVideoOn ? "hidden" : ""
+                            }`}
+                          />
+
+                          {!isVideoOn && (
+                            <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
+                              <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
+                                <span className="text-4xl font-bold text-gray-500">
+                                  {usernameFromUrl.charAt(0).toUpperCase()}
+                                </span>
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1">
+                            <span className="text-base font-medium">
+                              {usernameFromUrl} (You)
+                            </span>
+                          </div>
+
+                          {!isMicOn && (
+                            <div className="absolute top-4 right-4 bg-red-500 rounded-full p-2">
+                              <MicOff className="h-4 w-4" />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
                   }
-                }
-              })()}
-            </div>
-
-            {/* Thumbnails row */}
-            <div className="h-24 flex space-x-2 overflow-x-auto py-1">
-              {/* Local user thumbnail */}
-              <div
-                className={`relative h-full aspect-video bg-gray-800 rounded-lg shadow-md cursor-pointer border-2 ${
-                  pinnedParticipantId === "local"
-                    ? "border-blue-500"
-                    : "border-transparent"
-                } hover:border-blue-400 transition-colors`}
-                onClick={() => handlePinParticipant("local")}
-              >
-                {/* Create a separate video element for the thumbnail to prevent conflicts */}
-                <div className="h-full w-full relative overflow-hidden rounded-lg">
-                  <video
-                    key="local-thumbnail"
-                    autoPlay
-                    playsInline
-                    muted
-                    className={`w-full h-full object-cover rounded-lg ${
-                      !isVideoOn ? "hidden" : ""
-                    }`}
-                    ref={(el) => {
-                      // Set up the video source directly
-                      if (el && localStream && !el.srcObject) {
-                        el.srcObject = localStream;
-                      }
-                    }}
-                  />
-                </div>
-
-                {!isVideoOn && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-gray-800 rounded-lg">
-                    <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center">
-                      <span className="text-xl font-bold text-gray-500">
-                        {usernameFromUrl.charAt(0).toUpperCase()}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                <div className="absolute bottom-1 left-1 right-1 bg-gray-900 bg-opacity-70 rounded text-xs px-1 py-0.5 truncate">
-                  {usernameFromUrl} (You)
-                </div>
-
-                {!isMicOn && (
-                  <div className="absolute top-1 right-1 bg-red-500 rounded-full p-1">
-                    <MicOff className="h-2 w-2" />
-                  </div>
-                )}
-
-                {pinnedParticipantId === "local" && (
-                  <div className="absolute top-1 left-1 bg-blue-500 rounded-full p-1">
-                    <Pin className="h-2 w-2" />
-                  </div>
-                )}
+                })()}
               </div>
 
-              {/* Other participants thumbnails */}
-              {participants.map((participant) => (
+              {/* Thumbnails row */}
+              <div className="h-24 flex space-x-2 overflow-x-auto py-1">
+                {/* Local user thumbnail */}
                 <div
-                  key={participant.id}
                   className={`relative h-full aspect-video bg-gray-800 rounded-lg shadow-md cursor-pointer border-2 ${
-                    pinnedParticipantId === participant.id
+                    pinnedParticipantId === "local"
                       ? "border-blue-500"
                       : "border-transparent"
                   } hover:border-blue-400 transition-colors`}
-                  onClick={() => handlePinParticipant(participant.id)}
+                  onClick={() => handlePinParticipant("local")}
                 >
-                  <RemoteVideo
-                    participant={participant}
-                    isRecordingVisible={false}
-                    isPinned={pinnedParticipantId === participant.id}
-                  />
+                  {/* Create a separate video element for the thumbnail to prevent conflicts */}
+                  <div className="h-full w-full relative overflow-hidden rounded-lg">
+                    <video
+                      key="local-thumbnail"
+                      autoPlay
+                      playsInline
+                      muted
+                      className={`w-full h-full object-cover rounded-lg ${
+                        !isVideoOn ? "hidden" : ""
+                      }`}
+                      ref={(el) => {
+                        // Set up the video source directly
+                        if (el && localStream && !el.srcObject) {
+                          el.srcObject = localStream;
+                        }
+                      }}
+                    />
+                  </div>
 
-                  {pinnedParticipantId === participant.id && (
+                  {!isVideoOn && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-gray-800 rounded-lg">
+                      <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center">
+                        <span className="text-xl font-bold text-gray-500">
+                          {usernameFromUrl.charAt(0).toUpperCase()}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="absolute bottom-1 left-1 right-1 bg-gray-900 bg-opacity-70 rounded text-xs px-1 py-0.5 truncate">
+                    {usernameFromUrl} (You)
+                  </div>
+
+                  {!isMicOn && (
+                    <div className="absolute top-1 right-1 bg-red-500 rounded-full p-1">
+                      <MicOff className="h-2 w-2" />
+                    </div>
+                  )}
+
+                  {pinnedParticipantId === "local" && (
                     <div className="absolute top-1 left-1 bg-blue-500 rounded-full p-1">
                       <Pin className="h-2 w-2" />
                     </div>
                   )}
                 </div>
-              ))}
+
+                {/* Other participants thumbnails */}
+                {participants.map((participant) => (
+                  <div
+                    key={participant.id}
+                    className={`relative h-full aspect-video bg-gray-800 rounded-lg shadow-md cursor-pointer border-2 ${
+                      pinnedParticipantId === participant.id
+                        ? "border-blue-500"
+                        : "border-transparent"
+                    } hover:border-blue-400 transition-colors`}
+                    onClick={() => handlePinParticipant(participant.id)}
+                  >
+                    <RemoteVideo
+                      participant={participant}
+                      isRecordingVisible={false}
+                      isPinned={pinnedParticipantId === participant.id}
+                    />
+
+                    {pinnedParticipantId === participant.id && (
+                      <div className="absolute top-1 left-1 bg-blue-500 rounded-full p-1">
+                        <Pin className="h-2 w-2" />
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* Sidebar - adjust for mobile */}
-        <div
-          className={`${isMobile ? "w-full mt-2" : "w-1/4 ml-4"} ${
-            isChatOpen || isParticipantsOpen ? "block" : "hidden"
-          } flex flex-col z-20 ${isMobile ? "max-h-36" : ""}`}
-        >
-          {isParticipantsOpen && (
-            <div className="flex-1 mb-4">
-              <ParticipantsList
-                participants={participants.map((p) => ({
-                  id: p.id,
-                  username: p.username,
-                  isCreator: p.isCreator,
-                  isScreenSharing: p.isScreenSharing || false,
-                  isMuted: false,
-                }))}
-                currentUser={{
-                  username: usernameFromUrl,
-                  isCreator,
-                }}
-                onPinParticipant={handlePinParticipant}
-                pinnedParticipantId={pinnedParticipantId}
-              />
-            </div>
-          )}
-
-          {isChatOpen && (
-            <div
-              className={`${
-                isParticipantsOpen ? "flex-1" : "flex-1"
-              } bg-gray-800 rounded-lg flex flex-col shadow-lg animate-fadeIn ${
-                isMobile ? "mb-20 max-h-36" : "mb-16"
-              } chat-container`}
-            >
-              <div className="p-3 border-b border-gray-700 font-medium">
-                <h3>Room Chat</h3>
-              </div>
-
-              {/* Messages container */}
-              <div className="flex-1 overflow-y-auto p-3 space-y-3 chat-messages">
-                {chatMessages.length === 0 ? (
-                  <p className="text-gray-500 text-center text-sm py-4">
-                    No messages yet
-                  </p>
-                ) : (
-                  chatMessages.map((msg, index) => (
-                    <div
-                      key={index}
-                      className={`max-w-[85%] ${
-                        msg.isFromMe ? "ml-auto bg-blue-600" : "bg-gray-700"
-                      } rounded-lg p-2 break-words`}
-                    >
-                      <div className="text-xs text-gray-300 mb-1">
-                        {msg.isFromMe ? "You" : msg.sender}
-                      </div>
-                      <div>{msg.text}</div>
-                      <div className="text-xs text-gray-300 mt-1 text-right">
-                        {new Date(msg.timestamp).toLocaleTimeString([], {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}
-                      </div>
-                    </div>
-                  ))
-                )}
-                <div ref={chatEndRef} />
-              </div>
-
-              {/* Message input with higher z-index */}
-              <div className="p-3 border-t border-gray-700 flex bg-gray-800 relative z-30">
-                <input
-                  type="text"
-                  value={message}
-                  onChange={(e) => setMessage(e.target.value)}
-                  onKeyDown={handleKeyDown}
-                  placeholder="Type a message..."
-                  className="flex-1 bg-gray-700 text-white rounded-l-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+          {/* Sidebar - adjust for mobile */}
+          <div
+            className={`${isMobile ? "w-full mt-2" : "w-1/4 ml-4"} ${
+              isChatOpen || isParticipantsOpen ? "block" : "hidden"
+            } flex flex-col z-20 ${isMobile ? "max-h-36" : ""}`}
+          >
+            {isParticipantsOpen && (
+              <div className="flex-1 mb-4">
+                <ParticipantsList
+                  participants={participants.map((p) => ({
+                    id: p.id,
+                    username: p.username,
+                    isCreator: p.isCreator,
+                    isScreenSharing: p.isScreenSharing || false,
+                    isMuted: false,
+                  }))}
+                  currentUser={{
+                    username: usernameFromUrl,
+                    isCreator,
+                  }}
+                  onPinParticipant={handlePinParticipant}
+                  pinnedParticipantId={pinnedParticipantId}
                 />
-                <button
-                  onClick={sendChatMessage}
-                  disabled={!message.trim()}
-                  className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-r-lg px-3 py-2"
-                >
-                  <Send className="h-5 w-5" />
-                </button>
               </div>
-            </div>
-          )}
+            )}
+
+            {isChatOpen && (
+              <div
+                className={`${
+                  isParticipantsOpen ? "flex-1" : "flex-1"
+                } bg-gray-800 rounded-lg flex flex-col shadow-lg animate-fadeIn ${
+                  isMobile ? "mb-20 max-h-36" : "mb-16"
+                } chat-container`}
+              >
+                <div className="p-3 border-b border-gray-700 font-medium">
+                  <h3>Room Chat</h3>
+                </div>
+
+                {/* Messages container */}
+                <div className="flex-1 overflow-y-auto p-3 space-y-3 chat-messages">
+                  {chatMessages.length === 0 ? (
+                    <p className="text-gray-500 text-center text-sm py-4">
+                      No messages yet
+                    </p>
+                  ) : (
+                    chatMessages.map((msg, index) => (
+                      <div
+                        key={index}
+                        className={`max-w-[85%] ${
+                          msg.isFromMe ? "ml-auto bg-blue-600" : "bg-gray-700"
+                        } rounded-lg p-2 break-words`}
+                      >
+                        <div className="text-xs text-gray-300 mb-1">
+                          {msg.isFromMe ? "You" : msg.sender}
+                        </div>
+                        <div>{msg.text}</div>
+                        <div className="text-xs text-gray-300 mt-1 text-right">
+                          {new Date(msg.timestamp).toLocaleTimeString([], {
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+
+                {/* Message input with higher z-index */}
+                <div className="p-3 border-t border-gray-700 flex bg-gray-800 relative z-30">
+                  <input
+                    type="text"
+                    value={message}
+                    onChange={(e) => setMessage(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder="Type a message..."
+                    className="flex-1 bg-gray-700 text-white rounded-l-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <button
+                    onClick={sendChatMessage}
+                    disabled={!message.trim()}
+                    className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 rounded-r-lg px-3 py-2"
+                  >
+                    <Send className="h-5 w-5" />
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </main>
 
