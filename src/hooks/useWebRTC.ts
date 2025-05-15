@@ -88,6 +88,8 @@ export const useWebRTC = ({
             navigator.userAgent
           );
 
+        console.log("Device detected as:", isMobile ? "mobile" : "desktop");
+
         // Use different constraints based on device type
         const constraints = {
           audio: true,
@@ -108,7 +110,31 @@ export const useWebRTC = ({
         console.log("Requesting media with constraints:", constraints);
 
         try {
+          // Check if permissions are already granted on mobile
+          if (isMobile) {
+            const permission = await Promise.all([
+              navigator.permissions.query({
+                name: "microphone" as PermissionName,
+              }),
+              navigator.permissions.query({ name: "camera" as PermissionName }),
+            ]);
+
+            console.log(
+              "Permission status - Microphone:",
+              permission[0].state,
+              "Camera:",
+              permission[1].state
+            );
+          }
+
           const stream = await navigator.mediaDevices.getUserMedia(constraints);
+          console.log(
+            "Successfully obtained media stream with tracks:",
+            stream
+              .getTracks()
+              .map((t) => `${t.kind}: ${t.label} (${t.readyState})`)
+              .join(", ")
+          );
           setLocalStream(stream);
         } catch (initialError) {
           // If first attempt fails, try with minimal constraints
