@@ -373,6 +373,17 @@ export const useWebRTC = ({
       // Update the username in metadata if it changes
       peer.metadata = { username: localUsername };
 
+      // Immediately broadcast username to all peers every time we connect
+      setTimeout(() => {
+        console.log("Broadcasting initial username:", localUsername);
+        sendDataToAll({
+          type: "username",
+          username: localUsername,
+          peerId: peer.id,
+          timestamp: Date.now(),
+        });
+      }, 1000);
+
       // Monitor WebRTC connection state
       peer.on("iceStateChanged", (state) => {
         console.log(`ICE connection state changed to: ${state}`);
@@ -752,6 +763,16 @@ export const useWebRTC = ({
           isSharing: true,
           peerId: peerRef.current.id,
           streamType: "screen",
+          username: localUsername, // Send username with screen sharing notification
+          timestamp: Date.now(),
+        });
+
+        // Also explicitly send screen-share-started with username to ensure consistency
+        sendDataToAll({
+          type: "screen-share-started",
+          sharingPeerId: peerRef.current.id,
+          streamType: "screen",
+          username: localUsername, // Include username explicitly
           timestamp: Date.now(),
         });
 
@@ -1058,6 +1079,13 @@ export const useWebRTC = ({
         timestamp: Date.now(),
       });
 
+      // Request the peer's username too
+      dataConn.send({
+        type: "request-username",
+        peerId: peerRef.current?.id,
+        timestamp: Date.now(),
+      });
+
       // If we're the creator, send a list of all current participants to the new joiner
       if (isCreator) {
         const currentPeers = [
@@ -1095,6 +1123,7 @@ export const useWebRTC = ({
           isSharing: true,
           peerId: peerRef.current.id,
           streamType: "screen", // Identify this as screen content
+          username: localUsername, // Include username for proper identification
         });
 
         // If we're the one sharing, we need to immediately call them with our screen
@@ -1111,7 +1140,7 @@ export const useWebRTC = ({
                 track.contentHint = "screen";
               });
 
-              const call = peerRef.current.call(dataConn.peer, screenStream);
+              const call = peerRef.current!.call(dataConn.peer, screenStream);
 
               // Update our connections ref
               connectionsRef.current[dataConn.peer] = {
@@ -1123,7 +1152,16 @@ export const useWebRTC = ({
               dataConn.send({
                 type: "stream-metadata",
                 streamType: "screen",
-                peerId: peerRef.current.id,
+                peerId: peerRef.current!.id,
+                username: localUsername, // Include username
+                timestamp: Date.now(),
+              });
+
+              // Send explicit screen-share-started message
+              dataConn.send({
+                type: "screen-share-started",
+                sharingPeerId: peerRef.current.id,
+                username: localUsername,
                 timestamp: Date.now(),
               });
             } catch (err) {
@@ -1142,22 +1180,29 @@ export const useWebRTC = ({
         const sharingPeerId = data.peerId;
         const isSharing = data.isSharing;
         const streamType = data.streamType || "screen";
+        const username = data.username; // Extract username from the message
 
         console.log(
           "Screen sharing status update:",
           sharingPeerId,
           isSharing,
-          streamType
+          streamType,
+          username
         );
 
-        // Update the participant with the screen sharing status
+        // Update the participant with the screen sharing status and username if provided
         setParticipants((prev) => {
           // If participant is turning off screen sharing
           if (!isSharing) {
             console.log("Participant stopped sharing screen:", sharingPeerId);
             return prev.map((p) =>
               p.id === sharingPeerId
-                ? { ...p, isScreenSharing: false, streamType: "camera" }
+                ? {
+                    ...p,
+                    isScreenSharing: false,
+                    streamType: "camera",
+                    username: username || p.username,
+                  }
                 : p
             );
           }
@@ -1166,7 +1211,12 @@ export const useWebRTC = ({
           console.log("Participant started sharing screen:", sharingPeerId);
           return prev.map((p) =>
             p.id === sharingPeerId
-              ? { ...p, isScreenSharing: true, streamType: "screen" }
+              ? {
+                  ...p,
+                  isScreenSharing: true,
+                  streamType: "screen",
+                  username: username || p.username, // Update username if provided
+                }
               : p
           );
         });
@@ -1175,16 +1225,23 @@ export const useWebRTC = ({
       // Handle explicit screen share stream metadata
       if (data.type === "screen-sharing-stream") {
         const sharingPeerId = data.peerId;
+        const username = data.username; // Extract username
         console.log(
           "Received screen share stream metadata from:",
-          sharingPeerId
+          sharingPeerId,
+          username
         );
 
-        // Update participant to explicitly mark their stream as screen share
+        // Update participant to explicitly mark their stream as screen share and update username
         setParticipants((prev) => {
           return prev.map((p) =>
             p.id === sharingPeerId
-              ? { ...p, isScreenSharing: true, streamType: "screen" }
+              ? {
+                  ...p,
+                  isScreenSharing: true,
+                  streamType: "screen",
+                  username: username || p.username, // Update username if provided
+                }
               : p
           );
         });
@@ -1288,21 +1345,30 @@ export const useWebRTC = ({
         data.sharingPeerId
       ) {
         const sharingPeerId = data.sharingPeerId;
+        const username = data.username; // Extract username
 
         console.log(
           "Received direct screen share notification from:",
-          sharingPeerId
+          sharingPeerId,
+          "with username:",
+          username
         );
 
-        // Force update the UI to show screen sharing status
+        // Force update the UI to show screen sharing status with correct username
         setParticipants((prev) => {
           // First check if we already have this participant
           const existingParticipant = prev.find((p) => p.id === sharingPeerId);
 
           if (existingParticipant) {
-            // Update the participant with screen sharing flag
+            // Update the participant with screen sharing flag and username
             return prev.map((p) =>
-              p.id === sharingPeerId ? { ...p, isScreenSharing: true } : p
+              p.id === sharingPeerId
+                ? {
+                    ...p,
+                    isScreenSharing: true,
+                    username: username || p.username, // Update username if provided
+                  }
+                : p
             );
           } else {
             // If we don't have the participant yet (rare case), prepare to add them
@@ -1746,6 +1812,26 @@ export const useWebRTC = ({
         setParticipants((prev) =>
           prev.map((p) => (p.id === peerId ? { ...p, username } : p))
         );
+
+        // Also forward this username to other peers if I'm the creator
+        // This helps ensure everyone has the latest usernames
+        if (isCreator && peerRef.current && peerRef.current.id !== peerId) {
+          Object.entries(connectionsRef.current).forEach(
+            ([forwardPeerId, connections]) => {
+              if (
+                forwardPeerId !== peerId &&
+                connections.dataConnection?.open
+              ) {
+                connections.dataConnection.send({
+                  type: "username",
+                  username: username,
+                  peerId: peerId,
+                  timestamp: Date.now(),
+                });
+              }
+            }
+          );
+        }
       }
 
       // Add handler for recording status messages
@@ -1777,6 +1863,20 @@ export const useWebRTC = ({
         data.type !== "recording-status"
       ) {
         onDataReceived(data);
+      }
+
+      // Add handler for username request
+      if (data.type === "request-username" && peerRef.current) {
+        console.log(
+          "Received username request, sending my username:",
+          localUsername
+        );
+        dataConn.send({
+          type: "username",
+          username: localUsername,
+          peerId: peerRef.current.id,
+          timestamp: Date.now(),
+        });
       }
     });
 
