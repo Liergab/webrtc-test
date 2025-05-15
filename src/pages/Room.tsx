@@ -191,6 +191,7 @@ const Room: React.FC = () => {
   const [pinnedParticipantId, setPinnedParticipantId] = useState<string | null>(
     null
   );
+  const [displayName, setDisplayName] = useState(usernameFromUrl);
 
   // Add loading state for initial connection
   const [isConnecting, setIsConnecting] = useState(true);
@@ -259,6 +260,8 @@ const Room: React.FC = () => {
     error,
     isConnected,
     sendDataToAll,
+    username: connectedUsername,
+    setUsername,
   } = useWebRTC({
     roomId: roomId || "",
     isCreator,
@@ -350,6 +353,33 @@ const Room: React.FC = () => {
     if (typedData.type === "recording-status") {
       setIsRecordingVisible(Boolean(typedData.isRecording));
     }
+
+    // Handle username updates for UI and update any references in chat messages
+    if (
+      typedData.type === "username" &&
+      typeof typedData.username === "string" &&
+      typeof typedData.peerId === "string"
+    ) {
+      console.log(
+        "Received username update in UI:",
+        typedData.username,
+        typedData.peerId
+      );
+
+      // If any chat messages have the old username, update them
+      const participant = participants.find((p) => p.id === typedData.peerId);
+      if (participant && participant.username !== typedData.username) {
+        const oldUsername = participant.username;
+        // Update chat message senders to the new username
+        setChatMessages((prev) =>
+          prev.map((msg) =>
+            msg.sender === oldUsername
+              ? { ...msg, sender: typedData.username as string }
+              : msg
+          )
+        );
+      }
+    }
   }
 
   // Send chat message
@@ -359,7 +389,7 @@ const Room: React.FC = () => {
     // Create message object
     const chatMessage = {
       type: "chat-message",
-      sender: usernameFromUrl,
+      sender: displayName,
       text: message,
       timestamp: Date.now(),
     };
@@ -550,7 +580,7 @@ const Room: React.FC = () => {
     sendDataToAll({
       type: "recording-status",
       isRecording: true,
-      host: usernameFromUrl,
+      host: displayName,
       timestamp: Date.now(),
     });
   };
@@ -563,7 +593,7 @@ const Room: React.FC = () => {
     sendDataToAll({
       type: "recording-status",
       isRecording: false,
-      host: usernameFromUrl,
+      host: displayName,
       timestamp: Date.now(),
     });
   };
@@ -625,6 +655,59 @@ const Room: React.FC = () => {
       }
     }
   }, [localStream, pinnedParticipantId]);
+
+  // Update display name when connected username changes
+  useEffect(() => {
+    if (connectedUsername && connectedUsername !== displayName) {
+      console.log("Updating display name to:", connectedUsername);
+      setDisplayName(connectedUsername);
+    }
+  }, [connectedUsername, displayName]);
+
+  // When a participant joins or reconnects, ensure they get the latest chat history
+  useEffect(() => {
+    // Whenever a new participant joins, send them the chat history after a short delay
+    if (isCreator && participants.length > 0) {
+      const syncChatMessagesWithNewParticipants = setTimeout(() => {
+        // Send the last 20 messages (or fewer if there aren't that many)
+        const recentMessages = chatMessages.slice(-20);
+        if (recentMessages.length > 0) {
+          console.log("Syncing chat history with participants");
+          sendDataToAll({
+            type: "chat-history",
+            messages: recentMessages,
+            timestamp: Date.now(),
+          });
+        }
+      }, 2000);
+
+      return () => clearTimeout(syncChatMessagesWithNewParticipants);
+    }
+  }, [isCreator, participants.length, chatMessages, sendDataToAll]);
+
+  // Handle chat history received from host
+  useEffect(() => {
+    const handleChatHistory = (data: unknown) => {
+      if (!data || typeof data !== "object") return;
+
+      const typedData = data as Record<string, unknown>;
+      if (
+        typedData.type === "chat-history" &&
+        Array.isArray(typedData.messages)
+      ) {
+        // Only update if we don't already have messages
+        if (chatMessages.length === 0) {
+          console.log("Received chat history from host");
+          setChatMessages(typedData.messages as ChatMessage[]);
+        }
+      }
+    };
+
+    // Register a more specific handler for chat history
+    return () => {
+      // Cleanup if needed
+    };
+  }, [chatMessages.length]);
 
   return (
     <div className="min-h-screen flex flex-col main-container">
@@ -895,7 +978,7 @@ const Room: React.FC = () => {
                             <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
                               <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
                                 <span className="text-4xl font-bold text-gray-500">
-                                  {usernameFromUrl.charAt(0).toUpperCase()}
+                                  {displayName.charAt(0).toUpperCase()}
                                 </span>
                               </div>
                             </div>
@@ -903,7 +986,7 @@ const Room: React.FC = () => {
 
                           <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1 flex items-center">
                             <span className="text-base font-medium">
-                              {usernameFromUrl} (You)
+                              {displayName} (You)
                             </span>
                             <Pin className="h-3 w-3 ml-2 text-blue-400" />
                           </div>
@@ -962,7 +1045,7 @@ const Room: React.FC = () => {
                           <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
                             <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
                               <span className="text-4xl font-bold text-gray-500">
-                                {usernameFromUrl.charAt(0).toUpperCase()}
+                                {displayName.charAt(0).toUpperCase()}
                               </span>
                             </div>
                           </div>
@@ -970,7 +1053,7 @@ const Room: React.FC = () => {
 
                         <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1">
                           <span className="text-base font-medium">
-                            {usernameFromUrl} (Host)
+                            {displayName} (Host)
                           </span>
                         </div>
 
@@ -1011,7 +1094,7 @@ const Room: React.FC = () => {
                             <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
                               <div className="h-24 w-24 rounded-full bg-gray-700 flex items-center justify-center">
                                 <span className="text-4xl font-bold text-gray-500">
-                                  {usernameFromUrl.charAt(0).toUpperCase()}
+                                  {displayName.charAt(0).toUpperCase()}
                                 </span>
                               </div>
                             </div>
@@ -1019,7 +1102,7 @@ const Room: React.FC = () => {
 
                           <div className="absolute bottom-4 left-4 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1">
                             <span className="text-base font-medium">
-                              {usernameFromUrl} (You)
+                              {displayName} (You)
                             </span>
                           </div>
 
@@ -1069,14 +1152,14 @@ const Room: React.FC = () => {
                     <div className="absolute inset-0 flex items-center justify-center bg-gray-800 rounded-lg">
                       <div className="h-10 w-10 rounded-full bg-gray-700 flex items-center justify-center">
                         <span className="text-xl font-bold text-gray-500">
-                          {usernameFromUrl.charAt(0).toUpperCase()}
+                          {displayName.charAt(0).toUpperCase()}
                         </span>
                       </div>
                     </div>
                   )}
 
                   <div className="absolute bottom-1 left-1 right-1 bg-gray-900 bg-opacity-70 rounded text-xs px-1 py-0.5 truncate">
-                    {usernameFromUrl} (You)
+                    {displayName} (You)
                   </div>
 
                   {!isMicOn && (
@@ -1137,7 +1220,7 @@ const Room: React.FC = () => {
                     isMuted: false,
                   }))}
                   currentUser={{
-                    username: usernameFromUrl,
+                    username: displayName,
                     isCreator,
                   }}
                   onPinParticipant={handlePinParticipant}
@@ -1349,13 +1432,26 @@ const RemoteVideo: React.FC<RemoteVideoProps> = ({
   const [lastStreamUpdateTime, setLastStreamUpdateTime] = useState(Date.now());
   const [isVideoLoading, setIsVideoLoading] = useState(true);
   const [trackCount, setTrackCount] = useState(0);
+  const [displayName, setDisplayName] = useState(participant.username);
+
+  // Update display name when participant username changes
+  useEffect(() => {
+    if (participant.username !== displayName) {
+      console.log(
+        `Updating display name from ${displayName} to ${participant.username}`
+      );
+      setDisplayName(participant.username);
+    }
+  }, [participant.username, displayName]);
 
   useEffect(() => {
     if (videoRef.current && participant.stream) {
       console.log(
-        `Setting video for participant ${participant.id}${
-          participant.isScreenSharing ? " (sharing screen)" : ""
-        } with ${participant.stream.getTracks().length} tracks`
+        `Setting video for participant ${participant.id} (${
+          participant.username
+        })${participant.isScreenSharing ? " (sharing screen)" : ""} with ${
+          participant.stream.getTracks().length
+        } tracks`
       );
 
       // Show loading state
@@ -1435,6 +1531,7 @@ const RemoteVideo: React.FC<RemoteVideoProps> = ({
   }, [
     participant.stream,
     participant.id,
+    participant.username,
     participant.isScreenSharing,
     streamActive,
     lastStreamUpdateTime,
@@ -1444,9 +1541,9 @@ const RemoteVideo: React.FC<RemoteVideoProps> = ({
   useEffect(() => {
     if (videoRef.current && participant.stream) {
       console.log(
-        `Ensuring video element is updated for ${participant.id}${
-          participant.isScreenSharing ? " with screen share" : ""
-        }`
+        `Ensuring video element is updated for ${participant.id} (${
+          participant.username
+        })${participant.isScreenSharing ? " with screen share" : ""}`
       );
 
       // Reset the video loading state
@@ -1464,7 +1561,12 @@ const RemoteVideo: React.FC<RemoteVideoProps> = ({
         }
       }, 50);
     }
-  }, [participant.stream, participant.isScreenSharing, participant.id]);
+  }, [
+    participant.stream,
+    participant.isScreenSharing,
+    participant.id,
+    participant.username,
+  ]);
 
   return (
     <div className="relative w-full h-full">
@@ -1495,7 +1597,7 @@ const RemoteVideo: React.FC<RemoteVideoProps> = ({
           ) : (
             <div className="h-16 w-16 rounded-full bg-gray-700 flex items-center justify-center">
               <span className="text-2xl font-bold text-gray-500">
-                {participant.username.charAt(0).toUpperCase()}
+                {displayName.charAt(0).toUpperCase()}
               </span>
             </div>
           )}
@@ -1513,7 +1615,7 @@ const RemoteVideo: React.FC<RemoteVideoProps> = ({
 
       <div className="absolute bottom-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-2 py-1">
         <span className="text-sm font-medium">
-          {participant.username} {participant.isCreator ? "(Host)" : ""}
+          {displayName} {participant.isCreator ? "(Host)" : ""}
         </span>
       </div>
 
@@ -1539,12 +1641,22 @@ const RemoteScreenShare: React.FC<RemoteScreenShareProps> = ({
   const [reconnectAttempts, setReconnectAttempts] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [lastReconnectTime, setLastReconnectTime] = useState(0);
+  const [displayName, setDisplayName] = useState(participant.username);
+
+  // Update display name when participant username changes
+  useEffect(() => {
+    if (participant.username !== displayName) {
+      setDisplayName(participant.username);
+    }
+  }, [participant.username, displayName]);
 
   useEffect(() => {
     console.log(
       "RemoteScreenShare: Setting up with participant:",
       participant.id,
-      participant.isScreenSharing
+      participant.isScreenSharing,
+      "Username:",
+      participant.username
     );
 
     // Set up the video element with the stream
@@ -1636,6 +1748,7 @@ const RemoteScreenShare: React.FC<RemoteScreenShareProps> = ({
     participant.stream,
     participant.id,
     participant.isScreenSharing,
+    participant.username,
     onReconnectRequest,
     reconnectAttempts,
     isStreamActive,
@@ -1667,7 +1780,7 @@ const RemoteScreenShare: React.FC<RemoteScreenShareProps> = ({
       <div className="absolute top-3 left-3 bg-gray-900 bg-opacity-70 rounded-md px-3 py-1 flex items-center gap-2">
         <ScreenShare className="h-4 w-4 text-blue-400" />
         <span className="text-sm font-medium">
-          {participant.username} is sharing screen
+          {displayName} is sharing screen
         </span>
       </div>
 
