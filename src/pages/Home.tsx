@@ -29,6 +29,10 @@ const Home: React.FC = () => {
         navigator.userAgent
       );
     setIsMobile(mobile);
+    console.log(
+      "Home page - Device detected as:",
+      mobile ? "mobile" : "desktop"
+    );
   }, []);
 
   // Check for error state passed from room component on redirect
@@ -54,6 +58,36 @@ const Home: React.FC = () => {
 
     // On mobile, show permissions prompt first
     setShowPermissionsPrompt(true);
+
+    // Pre-check if permissions are already granted
+    try {
+      const permissionStatus = await Promise.all([
+        navigator.permissions.query({ name: "camera" as PermissionName }),
+        navigator.permissions.query({ name: "microphone" as PermissionName }),
+      ]);
+
+      console.log(
+        "Permission status check - Camera:",
+        permissionStatus[0].state,
+        "Microphone:",
+        permissionStatus[1].state
+      );
+
+      // If both are already granted, we can proceed immediately
+      if (
+        permissionStatus[0].state === "granted" &&
+        permissionStatus[1].state === "granted"
+      ) {
+        console.log("Permissions already granted, proceeding directly");
+        setTimeout(() => {
+          setShowPermissionsPrompt(false);
+          callback();
+        }, 100);
+      }
+    } catch (err) {
+      console.log("Error checking permission status:", err);
+      // Continue with normal flow if permission check fails
+    }
   };
 
   // Function to test media access and then proceed
@@ -70,7 +104,18 @@ const Home: React.FC = () => {
 
       // Permissions granted, proceed
       setShowPermissionsPrompt(false);
-      callback();
+
+      // Add a small delay before navigation to ensure browser has processed the permissions
+      setTimeout(() => {
+        try {
+          callback();
+        } catch (navError) {
+          console.error("Navigation error after permissions:", navError);
+          setErrorMessage(
+            "Error navigating after permissions were granted. Please try again."
+          );
+        }
+      }, 500);
     } catch (err) {
       console.error("Permission error:", err);
       setErrorMessage(
@@ -154,12 +199,10 @@ const Home: React.FC = () => {
               <button
                 onClick={() =>
                   testMediaAndProceed(
-                    showPermissionsPrompt
-                      ? isCreating
-                        ? handleCreateRoom
-                        : () =>
-                            handleJoinRoom({ preventDefault: () => {} } as any)
-                      : () => {}
+                    isCreating
+                      ? handleCreateRoom
+                      : () =>
+                          handleJoinRoom({ preventDefault: () => {} } as any)
                   )
                 }
                 className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-4 rounded"
